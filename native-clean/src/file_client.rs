@@ -178,8 +178,10 @@ pub async fn upload(peer: &mut Peer, local: &str, remote: &str) -> Result<(), St
             put_bytes(3, &data, &mut block_body);
             let ack = request(peer, 4, block_body, 4).await?;
             check(field_varint(&ack, 3).unwrap_or(0))?;
-            if field_varint(&ack, 2) != Some(block) || field_varint(&ack, 4) != Some(read as u64) {
-                return Err("invalid upload block acknowledgement".into());
+            if field_varint(&ack, 2).unwrap_or(0) != block
+                || field_varint(&ack, 4).unwrap_or(0) != read as u64
+            {
+                return Err(format!("invalid upload block acknowledgement: block={:?} bytes={:?} expected={block}/{read}", field_varint(&ack, 2), field_varint(&ack, 4)));
             }
             sent += read as u64;
             block += 1;
@@ -236,10 +238,8 @@ pub async fn download(peer: &mut Peer, remote: &str, local: &str) -> Result<(), 
         return Err("download list is empty or exceeds 8 GiB".into());
     }
     let target = PathBuf::from(local);
-    let stage = target.with_file_name(format!(".uu-download-{}", std::process::id()));
-    if stage.exists() {
-        std::fs::remove_dir_all(&stage).map_err(|_| "cannot clear download staging directory")?;
-    }
+    let stage = target.with_file_name(format!(".uu-download-{}", crate::wire::uuid()));
+    let _cleanup = DownloadStage(stage.clone());
     std::fs::create_dir_all(&stage)
         .map_err(|error| format!("cannot create download staging directory: {error}"))?;
     let mut open: HashMap<u64, (std::fs::File, PathBuf, u64)> = HashMap::new();
@@ -258,7 +258,10 @@ pub async fn download(peer: &mut Peer, remote: &str, local: &str) -> Result<(), 
             .map(TaskId::parse)
             .ok_or("host file request has no task id")?;
         if id.task != task.task {
-            return Err("host requested a different download task".into());
+            return Err(format!(
+                "host requested a different download task: got={} expected={}",
+                id.task, task.task
+            ));
         }
         match case_number {
             3 => {
@@ -292,6 +295,13 @@ pub async fn download(peer: &mut Peer, remote: &str, local: &str) -> Result<(), 
                     .ok_or("block arrived before file confirmation")?;
                 if data.len() > MAX_BLOCK {
                     return Err("download block exceeds 256 KiB".into());
+                }
+                let expected = infos
+                    .get(id.index.saturating_sub(1) as usize)
+                    .ok_or("invalid download index")?
+                    .size;
+                if entry.2.saturating_add(data.len() as u64) > expected {
+                    return Err("download exceeds declared file size".into());
                 }
                 entry
                     .0
@@ -329,6 +339,7 @@ pub async fn download(peer: &mut Peer, remote: &str, local: &str) -> Result<(), 
                     }
                     break Ok(());
                 }
+                check(field_varint(request_body, 2).unwrap_or(0))?;
                 let expected = id
                     .index
                     .checked_sub(1)
@@ -374,7 +385,7 @@ async fn request(
     put_bytes(8, &ftp, &mut rpc);
     let mut envelope = Vec::new();
     put_bytes(21, &rpc, &mut envelope);
-    peer.send(FILE_CHANNEL, envelope).await?;
+    peer.send(0, envelope).await?;
     loop {
         let message = next_file(peer).await?;
         let response = field_bytes(&message, 22).ok_or("invalid file response")?;
@@ -427,7 +438,7 @@ async fn send_response(
     put_bytes(4, &ftp, &mut response);
     let mut envelope = Vec::new();
     put_bytes(22, &response, &mut envelope);
-    peer.send(FILE_CHANNEL, envelope).await
+    peer.send(0, envelope).await
 }
 
 fn check(code: u64) -> Result<(), String> {
@@ -438,7 +449,7 @@ fn check(code: u64) -> Result<(), String> {
     }
 }
 fn next_task() -> u64 {
-    NEXT_TASK.fetch_add(1, Ordering::Relaxed)
+    (crate::terminal::now_nanos() as u64 & 0x3fff_ffff) + NEXT_TASK.fetch_add(1, Ordering::Relaxed)
 }
 fn task_id(id: TaskId) -> Vec<u8> {
     let mut body = Vec::new();
@@ -703,5 +714,50 @@ mod tests {
         );
         assert_eq!(split_remote("x.bin"), Some(("~/".into(), "x.bin".into())));
         assert!(safe_join(Path::new("/tmp"), "../x").is_none());
+    }
+}
+
+pub(crate) fn is_file_message(bytes: &[u8]) -> bool {
+    field_bytes(bytes, 22)
+        .and_then(|rpc| field_bytes(rpc, 4))
+        .is_some()
+        || field_bytes(bytes, 21)
+            .and_then(|rpc| field_bytes(rpc, 8))
+            .is_some()
+}
+
+pub async fn remove(peer: &mut Peer, path: &str) -> Result<(), String> {
+    let mut body = Vec::new();
+    put_bytes(
+        1,
+        &task_id(TaskId {
+            task: next_task(),
+            index: 0,
+        }),
+        &mut body,
+    );
+    put_bytes(2, path.as_bytes(), &mut body);
+    let response = request(peer, 8, body, 6).await?;
+    let code = field_varint(&response, 2).unwrap_or(0);
+    if code != OK {
+        // Some official hosts report a failure after deleting the entry.
+        // Confirm the resulting directory state before reporting success.
+        if let Some((parent, name)) = split_remote(path) {
+            if !list(peer, &parent)
+                .await?
+                .iter()
+                .any(|entry| entry.name == name)
+            {
+                return Ok(());
+            }
+        }
+    }
+    check(code)
+}
+
+struct DownloadStage(PathBuf);
+impl Drop for DownloadStage {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }

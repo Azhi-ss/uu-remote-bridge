@@ -121,6 +121,11 @@ impl Signal {
         Ok(result)
     }
 
+    pub async fn close(&mut self) {
+        let _ = self.send_text("41".to_owned()).await;
+        let _ = self.socket.close(None).await;
+    }
+
     pub async fn send_soac(&mut self, value: Value) -> Result<(), String> {
         self.send_text(format!("42{}", serde_json::json!(["soac", value])))
             .await

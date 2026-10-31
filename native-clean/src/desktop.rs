@@ -13,9 +13,10 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 #[cfg(feature = "desktop")]
 use webrtc::media::Sample;
+use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
+#[cfg(any(feature = "desktop", test))]
 use webrtc::{
     api::media_engine::MIME_TYPE_H264, rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
-    track::track_local::track_local_static_sample::TrackLocalStaticSample,
 };
 
 pub struct VideoTrack {
@@ -55,6 +56,148 @@ pub fn apply_input(value: &Value) -> Result<bool, String> {
     }
 }
 
+/// Receive and render the remote H.264 stream as a true-colour ANSI terminal
+/// view. This intentionally stays in the CLI: it is useful for smoke tests and
+/// headless machines while leaving a GUI viewer as a separate layer.
+pub async fn view_cli(device: &str, columns: usize) -> Result<(), String> {
+    receive_cli(device, columns, None).await
+}
+
+pub async fn snapshot(device: &str, path: &str) -> Result<(), String> {
+    receive_cli(device, 100, Some(path)).await
+}
+
+async fn receive_cli(device: &str, columns: usize, snapshot: Option<&str>) -> Result<(), String> {
+    #[cfg(feature = "desktop")]
+    {
+        use openh264::{
+            decoder::{Decoder, DecoderConfig, Flush},
+            formats::YUVSource,
+            OpenH264API,
+        };
+        use std::io::{self, Write};
+
+        let mut client = crate::peer::Client::connect_with_options(device, true).await?;
+        let mut decoder = Decoder::with_api_config(
+            OpenH264API::from_source(),
+            DecoderConfig::default()
+                .flush_after_decode(Flush::NoFlush)
+                .debug(std::env::var_os("UU_NATIVE_H264_DEBUG").is_some()),
+        )
+        .map_err(|error| format!("cannot initialize H.264 decoder: {error}"))?;
+        let mut stdout = io::stdout();
+        let terminal = TerminalView::enter(snapshot.is_none())?;
+        let interrupt = tokio::signal::ctrl_c();
+        tokio::pin!(interrupt);
+        let mut shown = 0u64;
+        let mut decoded = 0u64;
+        let mut units = 0u64;
+        let mut last_render = std::time::Instant::now() - Duration::from_secs(1);
+        let result = async { loop {
+            tokio::select! {
+                biased;
+                _ = &mut interrupt => break Ok(()),
+                packet = tokio::time::timeout(Duration::from_secs(15), client.next_video_packet()) => {
+                    let packet = packet.map_err(|_| "no desktop video received for 15 seconds")??;
+                    units += 1;
+                    let frame = match decoder.decode(&packet) {
+                        Ok(Some(frame)) => frame,
+                        Ok(None) => continue,
+                        Err(error) => {
+                            if std::env::var_os("UU_NATIVE_DEBUG").is_some() { eprintln!("H264 decode: {error}"); }
+                            continue;
+                        }
+                    };
+                    decoded += 1;
+                    let (width, height) = frame.dimensions();
+                    if let Some(path) = snapshot {
+                        let mut rgb = vec![0u8; width * height * 3];
+                        frame.write_rgb8(&mut rgb);
+                        let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+                        write!(file, "P6\n{width} {height}\n255\n").map_err(|e| e.to_string())?;
+                        file.write_all(&rgb).map_err(|e| e.to_string())?;
+                        eprintln!("desktop snapshot: {width}x{height} -> {path}");
+                        break Ok(());
+                    }
+                    if last_render.elapsed() >= Duration::from_millis(100) {
+                        let (rgb, preview_width, preview_height) = preview_rgb(&frame, columns);
+                        render_ansi(&mut stdout, &rgb, preview_width, preview_height, columns)?;
+                        shown += 1;
+                        last_render = std::time::Instant::now();
+                    }
+                }
+            }
+        }
+        }.await;
+        drop(terminal);
+        client.close().await;
+        if snapshot.is_none() {
+            eprintln!(
+                "desktop viewer: {shown} frames rendered, {decoded}/{units} access units decoded"
+            );
+        }
+        return result;
+    }
+    #[cfg(not(feature = "desktop"))]
+    {
+        let _ = (device, columns, snapshot);
+        Err("desktop viewer requires rebuilding with --features desktop".into())
+    }
+}
+
+#[cfg(feature = "desktop")]
+fn render_ansi<W: std::io::Write>(
+    output: &mut W,
+    rgb: &[u8],
+    width: usize,
+    height: usize,
+    columns: usize,
+) -> Result<(), String> {
+    let columns = columns.max(8).min(width.max(1));
+    let rows = std::env::var("LINES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(40)
+        .saturating_sub(1)
+        .max(4);
+    let columns = columns
+        .min(rows.saturating_mul(2).saturating_mul(width) / height.max(1))
+        .max(1);
+    let pixel_rows = ((height * columns / width.max(1)).max(2)).min(rows * 2);
+    output
+        .write_all(b"\x1b[H")
+        .map_err(|error| error.to_string())?;
+    for row in (0..pixel_rows).step_by(2) {
+        for column in 0..columns {
+            let x = column * width / columns;
+            let top = rgb_at(rgb, width, x, row * height / pixel_rows);
+            let bottom = rgb_at(
+                rgb,
+                width,
+                x,
+                ((row + 1) * height / pixel_rows).min(height - 1),
+            );
+            write!(
+                output,
+                "\x1b[38;2;{};{};{}m\x1b[48;2;{};{};{}m▀",
+                top.0, top.1, top.2, bottom.0, bottom.1, bottom.2
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        output
+            .write_all(b"\x1b[0m\r\n")
+            .map_err(|error| error.to_string())?;
+    }
+    output.flush().map_err(|error| error.to_string())
+}
+
+#[cfg(feature = "desktop")]
+fn rgb_at(rgb: &[u8], width: usize, x: usize, y: usize) -> (u8, u8, u8) {
+    let index = (y * width + x) * 3;
+    (rgb[index], rgb[index + 1], rgb[index + 2])
+}
+
+#[cfg(any(feature = "desktop", test))]
 fn h264_capability() -> RTCRtpCodecCapability {
     RTCRtpCodecCapability {
         mime_type: MIME_TYPE_H264.to_owned(),
@@ -250,4 +393,60 @@ mod tests {
     fn codec_advertises_h264() {
         assert_eq!(h264_capability().mime_type, "video/H264");
     }
+}
+
+#[cfg(feature = "desktop")]
+struct TerminalView(bool);
+#[cfg(feature = "desktop")]
+impl TerminalView {
+    fn enter(active: bool) -> Result<Self, String> {
+        use std::io::Write;
+        if active {
+            let mut out = std::io::stdout();
+            out.write_all(b"\x1b[?1049h\x1b[?25l\x1b[2J")
+                .map_err(|e| e.to_string())?;
+            out.flush().map_err(|e| e.to_string())?;
+        }
+        Ok(Self(active))
+    }
+}
+#[cfg(feature = "desktop")]
+impl Drop for TerminalView {
+    fn drop(&mut self) {
+        use std::io::Write;
+        if self.0 {
+            let mut out = std::io::stdout();
+            let _ = out.write_all(b"\x1b[0m\x1b[?25h\x1b[?1049l");
+            let _ = out.flush();
+        }
+    }
+}
+
+#[cfg(feature = "desktop")]
+fn preview_rgb(
+    frame: &impl openh264::formats::YUVSource,
+    columns: usize,
+) -> (Vec<u8>, usize, usize) {
+    let (width, height) = frame.dimensions();
+    let target_width = columns.clamp(8, 512).min(width);
+    let target_height = (height * target_width / width).max(2);
+    let (ys, us, vs) = frame.strides();
+    let mut rgb = Vec::with_capacity(target_width * target_height * 3);
+    for row in 0..target_height {
+        let y = row * height / target_height;
+        for col in 0..target_width {
+            let x = col * width / target_width;
+            let luma = i32::from(frame.y()[y * ys + x]) - 16;
+            let u = i32::from(frame.u()[(y / 2) * us + x / 2]) - 128;
+            let v = i32::from(frame.v()[(y / 2) * vs + x / 2]) - 128;
+            for component in [
+                298 * luma + 409 * v,
+                298 * luma - 100 * u - 208 * v,
+                298 * luma + 516 * u,
+            ] {
+                rgb.push(((component + 128) >> 8).clamp(0, 255) as u8);
+            }
+        }
+    }
+    (rgb, target_width, target_height)
 }

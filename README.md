@@ -54,7 +54,7 @@ macOS 上可直接从 Bash 调用 `bin/uu-bridge`；它只负责启动本地 Nod
 ./bin/uu-native-remote terminal-exec <device_id> session1 whoami
 ```
 
-它按精确会话名或数字 ID 区分多个 session，执行完发送 detach 保留会话，不会 close/kill。Rust crate 位于 `native-clean/`，使用 MIT 许可证；它独立实现认证、Engine.IO/Socket.IO、WebRTC、终端 host/viewer，以及目录、上传、下载和分块确认组成的完整文件通道，不复制 GPL 参考仓库源码。默认构建不启用桌面采集、输入、音频、GTK 或 PAM；需要桌面能力时用 `--features desktop` 并显式传 `host --desktop`。
+它按精确会话名或数字 ID 区分多个 session，执行完发送 detach 保留会话，不会 close/kill。Rust crate 位于 `native-clean/`，使用 MIT 许可证；它独立实现认证、Engine.IO/Socket.IO、WebRTC、终端 host/viewer，以及目录、上传、下载和分块确认组成的完整文件通道，不复制 GPL 参考仓库源码。默认构建不启用桌面采集、输入、音频、GTK 或 PAM；需要桌面能力时用 `--features desktop`，主机显式传 `host --desktop`，viewer 可用 `desktop-view` 在终端显示 ANSI 画面、`desktop-snapshot` 保存完整分辨率画面，`input` 发送鼠标键盘事件。桌面、输入和文件往返已经通过 SK 官方 Windows 被控端实测，见 [测试记录](native-clean/LIVE-TEST-2026-10-31.md)。
 
 ## 故障排查
 

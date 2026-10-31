@@ -47,41 +47,89 @@ pub fn envelope(sequence: u64, case_number: u32, body: &[u8]) -> Vec<u8> {
     out
 }
 
-pub fn terminal_control(sequence: u64) -> Vec<u8> {
-    let mut body = Vec::new();
-    field_bytes(1, &[], &mut body);
-    envelope(sequence, 28, &body)
+/// Ask an official host to attach the desktop video track to this viewer.
+/// Without this RPC a second viewer can complete SCTP but receive no RTP.
+pub fn request_video_track() -> Vec<u8> {
+    let sequence = 2_000_001;
+    let mut header = Vec::new();
+    field_varint(1, sequence, &mut header);
+    let mut rpc = Vec::new();
+    field_bytes(1, &header, &mut rpc);
+    field_bytes(15, &[], &mut rpc);
+    envelope(sequence, 21, &rpc)
 }
 
-pub fn connect_options(device: &str) -> Vec<u8> {
-    connect_options_for(device, false)
-}
-
-pub fn connect_options_for(device: &str, desktop: bool) -> Vec<u8> {
+pub fn connect_options_capture(device: &str, capture_type: u64) -> Vec<u8> {
+    let desktop = capture_type == 1;
     let mut out = Vec::new();
-    field_varint(1, if desktop { 1 } else { 8 }, &mut out);
-    field_varint(2, u64::MAX, &mut out);
+    field_varint(1, capture_type, &mut out);
+    if matches!(capture_type, 1 | 8) {
+        field_varint(2, u64::MAX, &mut out);
+    }
+    if desktop {
+        // Viewer capability shape used by the official Windows/macOS clients:
+        // 1080p30, software H264 4:2:0 decoder, and the feature flags that
+        // enable the control/video RPCs.
+        let width = 1920u64;
+        let height = 1080u64;
+        let fps = 30u64;
+        let mut params = Vec::new();
+        field_varint(1, 2, &mut params);
+        field_varint(2, 4, &mut params);
+        field_varint(4, 2, &mut params);
+        let mut size = Vec::new();
+        field_varint(1, width, &mut size);
+        field_varint(2, height, &mut size);
+        field_bytes(5, &size, &mut params);
+        field_bytes(6, &[], &mut params);
+        field_varint(7, 1, &mut params);
+        field_varint(9, 1, &mut params);
+        field_varint(11, fps, &mut params);
+        field_bytes(3, &params, &mut out);
+        let mut decoder = Vec::new();
+        field_varint(1, fps, &mut decoder);
+        field_varint(2, 1, &mut decoder);
+        field_varint(3, width, &mut decoder);
+        field_varint(4, height, &mut decoder);
+        field_varint(5, 1, &mut decoder);
+        field_bytes(4, &decoder, &mut out);
+        let mut display_mode = Vec::new();
+        field_varint(1, width, &mut display_mode);
+        field_varint(2, height, &mut display_mode);
+        field_varint(3, fps, &mut display_mode);
+        field_bytes(6, &display_mode, &mut out);
+        field_bytes(7, &size, &mut out);
+    }
     field_varint(8, 3, &mut out);
     field_bytes(9, device.as_bytes(), &mut out);
     field_varint(10, 1, &mut out);
-    field_bytes(12, b"4.42.0", &mut out);
+    if desktop {
+        let mut feature_flags = Vec::new();
+        for (field, version) in [(1, 6), (2, 2), (3, 1), (4, 2), (6, 2), (7, 2), (9, 1)] {
+            field_varint(field, version, &mut feature_flags);
+        }
+        field_bytes(11, &feature_flags, &mut out);
+    }
+    field_bytes(
+        12,
+        std::env::var("UU_NATIVE_APP_VERSION")
+            .unwrap_or_else(|_| "4.45.0".to_owned())
+            .as_bytes(),
+        &mut out,
+    );
     out
-}
-
-pub fn control_header(app_id: &str) -> serde_json::Value {
-    control_header_for(app_id, false)
 }
 
 pub fn control_header_for(app_id: &str, desktop: bool) -> serde_json::Value {
     json!({
-        "control_id": app_id,
+        "app_control_id": app_id,
         "app_data": {"_placeholder": true, "num": 0},
         "streamer_data": json!({
             "control_id": app_id,
             "device_capability": {
-                "display_info": [],
                 "ice_id": "",
-                "video_codec_capability": if desktop { vec!["video/H264"] } else { Vec::<&str>::new() }
+                "video_codec_capability": [],
+                "display_info": if desktop { vec![json!({"id": 1, "fps": 30, "type": 0, "hdr": 0})] } else { Vec::new() }
             }
         }).to_string()
     })
@@ -100,7 +148,6 @@ pub const RESIZE: u8 = 3;
 pub const CLOSE: u8 = 4;
 pub const STDOUT: u8 = 5;
 pub const EXIT: u8 = 6;
-pub const ERROR: u8 = 8;
 pub const LIST_REQ: u8 = 9;
 pub const LIST_RESP: u8 = 10;
 pub const KILL_REQ: u8 = 11;
@@ -149,6 +196,7 @@ pub fn frame_payload(bytes: &[u8], header: FrameHeader) -> Result<&[u8], String>
     Ok(&bytes[16..])
 }
 
+#[cfg(test)]
 pub fn find_varint(bytes: &[u8], wanted: u32) -> Option<u64> {
     let mut at = 0;
     while at < bytes.len() {
@@ -174,6 +222,7 @@ pub fn find_varint(bytes: &[u8], wanted: u32) -> Option<u64> {
     None
 }
 
+#[cfg(test)]
 fn read_varint(bytes: &[u8]) -> Option<(u64, usize)> {
     let mut value = 0u64;
     for (index, byte) in bytes.iter().copied().enumerate().take(10) {

@@ -188,6 +188,9 @@ impl HostPeer {
         candidate_tx: mpsc::Sender<(String, Value)>,
     ) -> Result<Self, String> {
         let mut engine = MediaEngine::default();
+        engine
+            .register_default_codecs()
+            .map_err(|e| format!("cannot register host codecs: {e}"))?;
         let registry = register_default_interceptors(
             webrtc::interceptor::registry::Registry::new(),
             &mut engine,
@@ -271,7 +274,9 @@ fn install_data_channels(
                 } else if label == "FILE_DATA_CHANNEL" {
                     files.handle(&message.data, tx).await;
                 } else if label == "CONTROL_DATA_CHANNEL" {
-                    if let Some(response) = control::response_for(&message.data) {
+                    if crate::file_client::is_file_message(&message.data) {
+                        files.handle(&message.data, tx).await;
+                    } else if let Some(response) = control::response_for(&message.data) {
                         let _ = tx.send(response);
                     } else if desktop_enabled {
                         if let Ok(value) = serde_json::from_slice::<Value>(&message.data) {
@@ -325,6 +330,7 @@ mod tests {
 
     async fn test_api() -> webrtc::api::API {
         let mut engine = MediaEngine::default();
+        engine.register_default_codecs().unwrap();
         let registry = register_default_interceptors(
             webrtc::interceptor::registry::Registry::new(),
             &mut engine,

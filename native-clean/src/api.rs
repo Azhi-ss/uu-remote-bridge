@@ -5,12 +5,12 @@ use serde::{Deserialize, Deserializer};
 #[derive(Clone, Deserialize)]
 pub struct Room {
     pub token: String,
-    #[serde(
-        default,
-        alias = "signaling_server",
-        deserialize_with = "deserialize_signaling_list"
-    )]
+    #[serde(default, deserialize_with = "deserialize_signaling_list")]
     pub signaling_list: Vec<String>,
+    // Recent UU responses include both fields; keeping them separate avoids
+    // serde's duplicate-field error while preserving older server shapes.
+    #[serde(default)]
+    pub signaling_server: Option<String>,
     #[serde(default)]
     pub ws_connect_timeout_ms: u64,
 }
@@ -51,15 +51,33 @@ pub async fn create(client: &Client, credentials: &Credentials) -> Result<Room, 
         .and_then(serde_json::Value::as_i64)
         .unwrap_or(-1);
     if !status.is_success() || code != 0 {
-        return Err(format!("UU room creation rejected (code {code})"));
+        return Err(format_api_error(
+            "UU room creation rejected",
+            status,
+            code,
+            &value,
+        ));
     }
-    let room = serde_json::from_value(
-        value
-            .get("data")
-            .cloned()
-            .ok_or("UU room response has no data")?,
-    )
-    .map_err(|_| "UU room response has no usable room")?;
+    let data = value
+        .get("data")
+        .cloned()
+        .ok_or("UU room response has no data")?;
+    let mut room: Room = serde_json::from_value(data.clone()).map_err(|error| {
+        let keys = data
+            .as_object()
+            .map(|object| object.keys().cloned().collect::<Vec<_>>().join(","))
+            .unwrap_or_default();
+        format!("UU room response has no usable room (fields: {keys}; decode: {error})")
+    })?;
+    if room.signaling_list.is_empty() {
+        if let Some(server) = room
+            .signaling_server
+            .take()
+            .filter(|value| !value.is_empty())
+        {
+            room.signaling_list.push(server);
+        }
+    }
     Ok(room)
 }
 
@@ -72,7 +90,13 @@ pub async fn join(
         return Err("invalid device id".into());
     }
     let path = format!("/api/v1/room/join/by_device/{}", path_segment(device));
-    let body = r#"{"force_join":false}"#;
+    // UU returns 2002 when another viewer owns the control slot. Keep the
+    // safe default, but allow an explicit takeover for local diagnostics.
+    let body = if std::env::var("UU_NATIVE_FORCE_JOIN").as_deref() == Ok("1") {
+        r#"{"force_join":true}"#
+    } else {
+        r#"{"force_join":false}"#
+    };
     let response = client
         .post(format!("{}{}", auth::API_BASE, path))
         .headers(auth::headers(credentials, "POST", &path, body)?)
@@ -90,16 +114,55 @@ pub async fn join(
         .and_then(serde_json::Value::as_i64)
         .unwrap_or(-1);
     if !status.is_success() || code != 0 {
-        return Err(format!("UU room request rejected (code {code})"));
+        return Err(format_api_error(
+            "UU room request rejected",
+            status,
+            code,
+            &value,
+        ));
     }
-    let room = serde_json::from_value(
-        value
-            .get("data")
-            .cloned()
-            .ok_or("UU room response has no data")?,
-    )
-    .map_err(|_| "UU room response has no usable room")?;
+    let data = value
+        .get("data")
+        .cloned()
+        .ok_or("UU room response has no data")?;
+    let mut room: Room = serde_json::from_value(data.clone()).map_err(|error| {
+        let keys = data
+            .as_object()
+            .map(|object| object.keys().cloned().collect::<Vec<_>>().join(","))
+            .unwrap_or_default();
+        format!("UU room response has no usable room (fields: {keys}; decode: {error})")
+    })?;
+    if room.signaling_list.is_empty() {
+        if let Some(server) = room
+            .signaling_server
+            .take()
+            .filter(|value| !value.is_empty())
+        {
+            room.signaling_list.push(server);
+        }
+    }
     Ok(room)
+}
+
+fn format_api_error(
+    prefix: &str,
+    status: reqwest::StatusCode,
+    code: i64,
+    value: &serde_json::Value,
+) -> String {
+    let msg = value
+        .get("msg")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .take(160)
+        .collect::<String>();
+    if msg.is_empty() {
+        format!("{prefix} (http {} code {code})", status.as_u16())
+    } else {
+        format!("{prefix} (http {} code {code}): {msg}", status.as_u16())
+    }
 }
 
 fn path_segment(value: &str) -> String {
@@ -128,7 +191,14 @@ mod tests {
         let host: Room =
             serde_json::from_value(serde_json::json!({"token":"t","signaling_server":"wss://a"}))
                 .unwrap();
-        assert_eq!(host.signaling_list, vec!["wss://a"]);
+        assert_eq!(host.signaling_server.as_deref(), Some("wss://a"));
+        let both: Room = serde_json::from_value(serde_json::json!({
+            "token":"t",
+            "signaling_server":"wss://fallback",
+            "signaling_list":["wss://a"]
+        }))
+        .unwrap();
+        assert_eq!(both.signaling_list, vec!["wss://a"]);
         assert_eq!(path_segment("device/id?x"), "device%2Fid%3Fx");
     }
 }
