@@ -53,10 +53,27 @@ cargo build --release --features desktop
 
 The viewer uses H.264 over WebRTC and draws a true-colour ANSI preview in the
 current terminal. It maintains the image aspect ratio, limits terminal output
-to 10 frames/second, and restores the cursor and alternate screen on Ctrl-C
-or error. `desktop-snapshot` writes a full-resolution PPM image. The official
+to 10 frames/second, and resizes to the terminal. It captures keyboard, mouse,
+drag, wheel, and bracketed paste events in the same WebRTC session. It requires
+an interactive terminal with mouse reporting and true-colour support. Raw mode,
+mouse capture, the cursor, and the alternate screen are restored on exit/error. `desktop-snapshot` writes a full-resolution PPM image. The official
 Windows UU host works directly; the Rust host requires `host --desktop`.
-This CLI does not play audio or forward local terminal keystrokes automatically.
+Click directly on the preview, then type or paste. Input uses Windows key codes.
+
+| Local input | Remote action |
+| --- | --- |
+| Text / bracketed paste | Unicode text input |
+| Arrows, Tab / Shift+Tab, Enter, Esc, navigation, F1–F24 | Matching Windows key |
+| Ctrl/Alt shortcuts | Matching Windows chord, including Ctrl+C |
+| Ctrl+G, then R (or another key) | Win+R (or Win+that key); Esc cancels the prefix |
+| Mouse buttons, drag, wheel | Remote mouse, mapped to the displayed image |
+| Ctrl+] | Exit locally (legacy terminals also encode Ctrl+5 this way) |
+
+Focus loss, exit and errors release held mouse buttons/modifiers. Events outside
+the image are ignored, except releasing a drag begun inside it. Normal terminals
+report keystrokes rather than physical key releases, so keyboard chords are sent
+as complete press/release pairs; this is not a held-key gaming controller. Keys
+intercepted by the terminal/OS cannot be forwarded. There is no audio playback.
 
 Send one JSON event or an array of events with `input`. Windows uses numeric
 virtual-key codes; absolute mouse coordinates are normalized to 0..1:

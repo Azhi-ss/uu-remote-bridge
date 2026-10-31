@@ -77,7 +77,10 @@ async fn receive_cli(device: &str, columns: usize, snapshot: Option<&str>) -> Re
         };
         use std::io::{self, Write};
 
-        let mut client = crate::peer::Client::connect_with_options(device, true).await?;
+        use crate::viewer_terminal::{InputState, TerminalView, Viewport};
+        use crossterm::event::{Event, EventStream};
+        use futures_util::StreamExt;
+
         let mut decoder = Decoder::with_api_config(
             OpenH264API::from_source(),
             DecoderConfig::default()
@@ -85,20 +88,82 @@ async fn receive_cli(device: &str, columns: usize, snapshot: Option<&str>) -> Re
                 .debug(std::env::var_os("UU_NATIVE_H264_DEBUG").is_some()),
         )
         .map_err(|error| format!("cannot initialize H.264 decoder: {error}"))?;
+        if snapshot.is_none() {
+            TerminalView::check()?;
+        }
+        let mut client = crate::peer::Client::connect_with_options(device, true).await?;
+        let terminal = if snapshot.is_none() {
+            match TerminalView::enter() {
+                Ok(terminal) => Some(terminal),
+                Err(error) => {
+                    client.close().await;
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
         let mut stdout = io::stdout();
-        let terminal = TerminalView::enter(snapshot.is_none())?;
+        let mut events = snapshot.is_none().then(EventStream::new);
+        let mut input = InputState::default();
+        let mut terminal_size = crossterm::terminal::size().unwrap_or((100, 40));
+        let mut viewport = None;
+        let mut dimensions = None;
         let interrupt = tokio::signal::ctrl_c();
         tokio::pin!(interrupt);
+        #[cfg(unix)]
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .map_err(|e| e.to_string())?;
+        let termination = async {
+            #[cfg(unix)]
+            {
+                terminate.recv().await;
+            }
+            #[cfg(not(unix))]
+            {
+                std::future::pending::<()>().await;
+            }
+        };
+        tokio::pin!(termination);
         let mut shown = 0u64;
         let mut decoded = 0u64;
         let mut units = 0u64;
+        let mut sent = 0u64;
+        let mut held_keys = std::collections::BTreeSet::new();
         let mut last_render = std::time::Instant::now() - Duration::from_secs(1);
+        let mut video_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         let result = async { loop {
             tokio::select! {
-                biased;
                 _ = &mut interrupt => break Ok(()),
-                packet = tokio::time::timeout(Duration::from_secs(15), client.next_video_packet()) => {
-                    let packet = packet.map_err(|_| "no desktop video received for 15 seconds")??;
+                _ = &mut termination => break Ok(()),
+                _ = tokio::time::sleep_until(video_deadline) => break Err("no desktop video received for 15 seconds".into()),
+                event = async { events.as_mut().unwrap().next().await }, if events.is_some() => {
+                    let event = event.ok_or("terminal input closed")?.map_err(|e| e.to_string())?;
+                    if let Event::Resize(width, height) = event {
+                        terminal_size = (width,height);
+                        viewport = dimensions.map(|(w,h)| Viewport::fit(w,h,columns,terminal_size));
+                        stdout.write_all(b"\x1b[2J").map_err(|e| e.to_string())?;
+                    }
+                    let batch = input.handle(event, viewport);
+                    if batch.exit { break Ok(()); }
+                    if viewport.is_some() {
+                        for event in batch.events {
+                            if event["action"] == "kbd_press" {
+                                if let Some(key) = event["key"].as_u64() { held_keys.insert(key); }
+                            }
+                            tokio::time::timeout(Duration::from_secs(2),client.send_input(&event))
+                                .await.map_err(|_| "desktop input send timed out")??;
+                            if event["action"] == "kbd_release" {
+                                if let Some(key) = event["key"].as_u64() { held_keys.remove(&key); }
+                            }
+                            sent += 1;
+                        }
+                    }
+                }
+                packet = client.next_video_packet() => {
+                    let packet = packet?;
+                    video_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
                     units += 1;
                     let frame = match decoder.decode(&packet) {
                         Ok(Some(frame)) => frame,
@@ -120,8 +185,12 @@ async fn receive_cli(device: &str, columns: usize, snapshot: Option<&str>) -> Re
                         break Ok(());
                     }
                     if last_render.elapsed() >= Duration::from_millis(100) {
-                        let (rgb, preview_width, preview_height) = preview_rgb(&frame, columns);
-                        render_ansi(&mut stdout, &rgb, preview_width, preview_height, columns)?;
+                        let view = Viewport::fit(width,height,columns,terminal_size);
+                        if viewport != Some(view) { stdout.write_all(b"\x1b[2J").map_err(|e| e.to_string())?; }
+                        viewport = Some(view);
+                        dimensions = Some((width,height));
+                        let rgb = preview_rgb(&frame,view.columns,view.rows * 2);
+                        render_ansi(&mut stdout, &rgb, view.columns, view.rows * 2)?;
                         shown += 1;
                         last_render = std::time::Instant::now();
                     }
@@ -129,12 +198,23 @@ async fn receive_cli(device: &str, columns: usize, snapshot: Option<&str>) -> Re
             }
         }
         }.await;
+        // Release a held drag/modifier before closing the transport, even on input/video error.
+        let mut releases = input.release_all();
+        releases.extend(
+            held_keys
+                .into_iter()
+                .map(|key| serde_json::json!({"action":"kbd_release","key":key})),
+        );
+        for event in releases {
+            let _ =
+                tokio::time::timeout(Duration::from_millis(250), client.send_input(&event)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        drop(events);
         drop(terminal);
         client.close().await;
         if snapshot.is_none() {
-            eprintln!(
-                "desktop viewer: {shown} frames rendered, {decoded}/{units} access units decoded"
-            );
+            eprintln!("desktop viewer: {shown} frames rendered, {decoded}/{units} access units decoded, {sent} input events sent");
         }
         return result;
     }
@@ -151,19 +231,9 @@ fn render_ansi<W: std::io::Write>(
     rgb: &[u8],
     width: usize,
     height: usize,
-    columns: usize,
 ) -> Result<(), String> {
-    let columns = columns.max(8).min(width.max(1));
-    let rows = std::env::var("LINES")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(40)
-        .saturating_sub(1)
-        .max(4);
-    let columns = columns
-        .min(rows.saturating_mul(2).saturating_mul(width) / height.max(1))
-        .max(1);
-    let pixel_rows = ((height * columns / width.max(1)).max(2)).min(rows * 2);
+    let columns = width;
+    let pixel_rows = height;
     output
         .write_all(b"\x1b[H")
         .map_err(|error| error.to_string())?;
@@ -188,6 +258,9 @@ fn render_ansi<W: std::io::Write>(
             .write_all(b"\x1b[0m\r\n")
             .map_err(|error| error.to_string())?;
     }
+    let help = "Ctrl+] exit | Ctrl+G, key: Win+key | mouse / paste";
+    write!(output, "\x1b[0m\x1b[2K{}", &help[..help.len().min(columns)])
+        .map_err(|e| e.to_string())?;
     output.flush().map_err(|error| error.to_string())
 }
 
@@ -396,40 +469,12 @@ mod tests {
 }
 
 #[cfg(feature = "desktop")]
-struct TerminalView(bool);
-#[cfg(feature = "desktop")]
-impl TerminalView {
-    fn enter(active: bool) -> Result<Self, String> {
-        use std::io::Write;
-        if active {
-            let mut out = std::io::stdout();
-            out.write_all(b"\x1b[?1049h\x1b[?25l\x1b[2J")
-                .map_err(|e| e.to_string())?;
-            out.flush().map_err(|e| e.to_string())?;
-        }
-        Ok(Self(active))
-    }
-}
-#[cfg(feature = "desktop")]
-impl Drop for TerminalView {
-    fn drop(&mut self) {
-        use std::io::Write;
-        if self.0 {
-            let mut out = std::io::stdout();
-            let _ = out.write_all(b"\x1b[0m\x1b[?25h\x1b[?1049l");
-            let _ = out.flush();
-        }
-    }
-}
-
-#[cfg(feature = "desktop")]
 fn preview_rgb(
     frame: &impl openh264::formats::YUVSource,
-    columns: usize,
-) -> (Vec<u8>, usize, usize) {
+    target_width: usize,
+    target_height: usize,
+) -> Vec<u8> {
     let (width, height) = frame.dimensions();
-    let target_width = columns.clamp(8, 512).min(width);
-    let target_height = (height * target_width / width).max(2);
     let (ys, us, vs) = frame.strides();
     let mut rgb = Vec::with_capacity(target_width * target_height * 3);
     for row in 0..target_height {
@@ -448,5 +493,5 @@ fn preview_rgb(
             }
         }
     }
-    (rgb, target_width, target_height)
+    rgb
 }

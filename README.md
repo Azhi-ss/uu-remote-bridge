@@ -1,10 +1,23 @@
 # uu-remote-bridge
 
-让 AI Agent（Claude Code / Codex / pi / 任意 CLI agent）**非交互驱动网易 UU远程（GameViewer）的远程终端**——远程执行命令、读写文件、处理交互式终端。无需 VSCode，远程无需装任何东西。
+让 AI Agent 通过 Bash 原生控制 UU 远程电脑：指定 terminal session 执行命令、传文件、读取桌面画面与发送鼠标键盘。用户也可直接在终端预览里操作远程桌面。
 
-> UU远程自带的 `uuyc-cli term` 是交互式 TUI，管道重定向会挂起；官方 CLI SKILL 只覆盖设备管理，不覆盖远程终端执行。本项目补齐这一层。
+## 原生客户端（推荐）
 
-## 快速开始
+```bash
+cargo build --release --features desktop --manifest-path native-clean/Cargo.toml
+./bin/uu-native-remote terminal-list DEVICE_ID
+./bin/uu-native-remote terminal-exec DEVICE_ID session1 whoami
+./bin/uu-native-remote desktop-view DEVICE_ID 160
+```
+
+需要已有原生凭据 `~/.config/uuremote/config.json`（或 `UU_CONFIG`）。`desktop-view` 需要交互式终端；鼠标、键盘、拖动、滚轮和粘贴直接转发，`Ctrl+]` 退出，`Ctrl+G` 后按 `R` 发送 Win+R。
+
+Agent 用法以 [SKILL.md](SKILL.md) 为入口：命令直接执行，GUI 通过原生截图 → 输入 → 核实完成，无需控制本机 UU 可视化窗口。将整个仓库链接到 Agent 的 `skills/uu-remote-bridge` 目录即可发现；保留 `references/`、`bin/` 与 `native-clean/`。详见 [原生客户端文档](native-clean/README.md) 与 [实测记录](native-clean/LIVE-TEST-2026-10-31.md)。
+
+以下 Node 管道桥接器保留用于兼容支持旧终端管道的官方 CLI；其约束不适用于原生通道。
+
+## 旧管道桥接器快速开始
 
 ```powershell
 git clone https://github.com/youki258/uu-remote-bridge.git
@@ -23,7 +36,7 @@ node bin\uu-bridge.cjs exec <device_id> "hostname"
 - Node.js ≥ 20
 
 作为 agent skill 使用：整个目录拷到 `%USERPROFILE%\.agents\skills\uu-remote-bridge`（Claude Code / pi / Codex 的 skill 目录），`SKILL.md` 自动生效。
-运行时只需要 `SKILL.md` + `bin/` + `scripts/`；`PROTOCOL.md`（协议常量）、`PLAN.md`/`TEST-REPORT.md`（开发记录）、`tools/`/`tests/`（取证与离线回归）均不影响 skill 加载。
+旧 Node 管道运行时需要 `bin/` + `scripts/`；原生 skill 还需上述原生源码/二进制与引用资料。`PROTOCOL.md`（协议常量）、`PLAN.md`/`TEST-REPORT.md`（开发记录）、`tools/`/`tests/`（取证与离线回归）均不影响 skill 加载。
 
 ## 命令
 
@@ -54,7 +67,7 @@ macOS 上可直接从 Bash 调用 `bin/uu-bridge`；它只负责启动本地 Nod
 ./bin/uu-native-remote terminal-exec <device_id> session1 whoami
 ```
 
-它按精确会话名或数字 ID 区分多个 session，执行完发送 detach 保留会话，不会 close/kill。Rust crate 位于 `native-clean/`，使用 MIT 许可证；它独立实现认证、Engine.IO/Socket.IO、WebRTC、终端 host/viewer，以及目录、上传、下载和分块确认组成的完整文件通道，不复制 GPL 参考仓库源码。默认构建不启用桌面采集、输入、音频、GTK 或 PAM；需要桌面能力时用 `--features desktop`，主机显式传 `host --desktop`，viewer 可用 `desktop-view` 在终端显示 ANSI 画面、`desktop-snapshot` 保存完整分辨率画面，`input` 发送鼠标键盘事件。桌面、输入和文件往返已经通过 SK 官方 Windows 被控端实测，见 [测试记录](native-clean/LIVE-TEST-2026-10-31.md)。
+它按精确会话名或数字 ID 区分多个 session，执行完发送 detach 保留会话，不会 close/kill。Rust crate 位于 `native-clean/`，使用 MIT 许可证；它独立实现认证、Engine.IO/Socket.IO、WebRTC、终端 host/viewer，以及目录、上传、下载和分块确认组成的完整文件通道，不复制 GPL 参考仓库源码。默认构建不启用桌面采集、输入、音频、GTK 或 PAM；需要桌面能力时用 `--features desktop`，主机显式传 `host --desktop`，viewer 可用 `desktop-view` 在终端显示 ANSI 画面，并直接点击、拖动、滚动、输入和粘贴；`Ctrl+]` 退出，`Ctrl+G` 后再按一个键发送 Windows 组合键。`desktop-snapshot` 保存完整分辨率画面，`input` 仍可单独发送鼠标键盘事件。桌面、输入和文件往返已经通过 SK 官方 Windows 被控端实测，见 [测试记录](native-clean/LIVE-TEST-2026-10-31.md)。
 
 ## 故障排查
 

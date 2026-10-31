@@ -1,167 +1,68 @@
 ---
 name: uu-remote-bridge
-description: "Non-interactively run commands, transfer small files, and answer interactive prompts on a REMOTE Windows PC through NetEase UU Remote (网易UU远程/GameViewer/uuyc-cli term) — 在某台远程电脑上执行命令、跑脚本、取回小文件、处理 ssh/Read-Host 交互提示. Use when the user mentions UU远程, uuyc-cli, or asks to operate a remote PC by device name. Device/cloudpc/assist management belongs to the official `uuyc-cli` skill, not this one."
+description: "通过 UU Remote 原生 CLI 操作远程电脑：执行指定 session 的命令、传文件、取桌面画面和发送鼠标键盘。提到 UU远程、uuyc-cli、SK 远程电脑或希望替代远程 Computer Use 时使用；本机应用操作不在此范围。"
 license: MIT
 metadata:
-  origin: "Execution core from song-chaoyang/uu-remote-vscode (MIT); operational rules from yinren112/uu-remote-ops; official JSON/error-code conventions from NetEase vendor skill (uuyc.163.com/help/cli.html); merged & audited 2026-09-07"
-  protocol-evidence: "PROTOCOL.md — 屏幕 39行×120列 等常量均为 2026-09-19 在 UU远程 4.41.0.2311 上实测逆推，带原始字节证据"
+  implementation: "native-clean Rust host/viewer; bin/uu-native-remote"
 ---
 
-# uu-remote-bridge
+# UU Remote native control
 
-通过官方 `uuyc-cli term` 管道通道，在远程设备上非交互执行命令、读写小文件、处理交互式终端。本机无需 VSCode，远程无需装任何东西（只需 UU远程 被控端）。
+远程电脑操作优先通过本 skill 的 `uu-native-remote` Bash 接口完成。
+命令任务直接用远程 terminal session；GUI 任务通过原生桌面画面与输入协议完成。
+这替换的是“控制本机 UU 窗口，再在远程画面中操作”的 Computer Use 路径。
+本机其他应用仍使用它们自己的 CLI、API 或 GUI 工具。
 
-## 前提（官方要求）
+## 选择设备与通道
 
-- 本机 UU远程 主程序**运行且已登录**，账号与被控端**同账号**（未运行 → 退出码 2 / 错误码 1002，未登录 → 1001）
-- **主控端与被控端均为 V4.39.0 及以上**（旧版主控端不能连新版被控端）。本项目**不绑定版本**：`term` 通道能力运行时探测，升级 UU远程 后无需改配置
-- 被控端：官方明文 **term 仅支持 Windows 被控端**（macOS 被控端尚未支持）；本项目仓库里的 zsh/bash 分支是**未验证的实验代码**，不要对外宣称支持
-- 被控端**锁屏时 CLI 管道通道同样被拦**（无 TTY → 取空密码 → `Error: empty password` / 退出码 6），必须先解锁再自动化
-- Node.js ≥ 20
+1. `command -v uu-native-remote`；不可用时用本 skill 根目录下的 `bin/uu-native-remote`。
+   用 `uu-native-remote --help` 查看当前命令，路径不依赖调用者当前目录。
+2. `uuyc-cli device list --json` 匹配用户指定的名字与在线状态，保存本次设备 ID。
+   `uuyc-cli device status --json` 查看本机已连接的远程设备。
+   官方 CLI 要检查 JSON 的 `success`，它的退出码可能仍为 0。
+3. 按任务选通道：
 
-## 工具位置（自包含）
+| 任务 | 接口 |
+| --- | --- |
+| 运行程序、查看配置、进入 WSL | `terminal-list` → `terminal-exec DEVICE SESSION COMMAND` |
+| 上传、下载、目录与删除 | `files-list / files-upload / files-download / files-remove` |
+| Agent 操作桌面 GUI | [桌面操作参考](references/desktop.md)：snapshot → inspect → input → verify |
+| 用户直接操作终端预览 | `desktop-view DEVICE [COLUMNS]`，鼠标键盘直接转发 |
 
-| 路径 | 说明 |
-|---|---|
-| `bin/uu-bridge.cjs` | 编译好的单文件 CLI（仅启动官方 uuyc-cli，无网络/eval/遥测） |
-| `src/` | TypeScript 源码（可审计、可重编译） |
-| `scripts/uu-doctor.ps1` | 只读体检：CLI 存在性、主程序通信、设备在线、现有会话（动手前先跑） |
-| `scripts/uu-push-file.ps1` | ⚠️ **不可用**：上游脚本在当前服务端版本下标记渲染丢失（2026-09 复测确认），小文件推送请用 `write` |
-| `vendor/official-docs/` | 官方文档全文存档 + `INDEX.md`（硬约束/待验项）。**不进 Git、克隆后不存在**；仅本地参考 |
+原生客户端读取 `UU_CONFIG` 或 `~/.config/uuremote/config.json` 中已有凭据；
+不需要启动本机 UU 可视化远控窗口。官方 CLI 设备管理仍依赖已登录的官方 App。
+原生凭据缺失/过期时报告具体错误，当前 clean 客户端没有 `login` 子命令。
+桌面功能需 desktop 构建：在本 skill 根目录执行
+`cargo build --release --features desktop --manifest-path native-clean/Cargo.toml`。
 
-Windows 上调用（skill 目录通常为 `%USERPROFILE%\.agents\skills\uu-remote-bridge`）：
+## 命令与文件
 
-```powershell
-node "%USERPROFILE%\.agents\skills\uu-remote-bridge\bin\uu-bridge.cjs" <子命令> ...
+```sh
+uu-native-remote terminal-list DEVICE_ID
+uu-native-remote terminal-exec DEVICE_ID session1 'whoami'
+uu-native-remote files-list DEVICE_ID 'C:/Users/Public'
+uu-native-remote files-upload DEVICE_ID ./local.txt 'C:/Users/Public/local.txt'
+uu-native-remote files-download DEVICE_ID 'C:/Users/Public/local.txt' ./copy.txt
 ```
 
-macOS 可直接使用同目录的 `bin/uu-bridge` Bash 入口；它不会自行创建新会话，传入 `--session-name` 或 `--session-id` 时只路由到指定远程 session。
+`terminal-exec` 按精确名称或数字 ID 附加已有 session，完成后 detach；不会杀掉会话。
+从 session 列表确认 shell 后使用对应语法，Windows PowerShell 中进入 WSL 用 `wsl.exe`。
+GUI 的 `uuyc-cli term attach` 只开窗口，不是可执行的 stdin/stdout 管道。
+读配置优先远程命令或 files-download，文件内容与密钥只在当前任务需要的范围内处理。
+文件传输完成后核对大小，重要内容核对哈希；清理由本次任务产生的临时文件。
 
-如果当前官方 `uuyc-cli` 只有 GUI 会话管理命令（没有 `--list-sessions` / `--session-id` 管道模式），可用同目录的 `bin/uu-native-remote`。它调用单独保留许可证的 native `CT_TERMINAL` 后端，不会把 GUI 窗口当成可执行管道：
+## 连接与结果
 
-```bash
-bin/uu-native-remote terminal-list <device_id>
-bin/uu-native-remote terminal-exec <device_id> session1 whoami
-bin/uu-native-remote terminal-exec <device_id> 1 'Get-ChildItem C:\\Users'
-```
+每次 CLI 调用会建立并关闭连接。同一设备的桌面、独立 input 和文件命令顺序执行，
+先退出持续的 `desktop-view` 再调用其他命令。先前由本任务打开的官方连接可在测试时断开，
+结束后恢复；保留已有远程 terminal session。
 
-`terminal-exec` 只附加已存在的会话，按数字 ID 或精确名称选择，命令完成后发送 detach，不会发送 close/kill。native 后端需要单独完成一次 UU 登录并生成自己的配置；不会读取或复制官方 App 的令牌。
+错误 2002 表示设备占用。检查并关闭本任务自己的连接；确认是自己的残留连接时，
+可仅为那一次调用设置 `UU_NATIVE_FORCE_JOIN=1`。其他使用者占用时协调，不把强制接管设为默认。
+错误 2005 或 HTTP 429（可能附带 code 1004）表示限流，停止密集重试，至少等待 30 秒后仅重试一次。设备离线或凭据错误要解决根因。
 
-## 命令速查
+命令返回、输入成功发送不等于远端完成：命令核对输出，GUI 核对新的桌面画面，文件核对内容。
+实测范围是 macOS 主控连接官方 SK Windows 被控端；其他系统、锁屏、显示器布局需要单独验证。
 
-| 命令 | 说明 |
-|---|---|
-| `doctor` | 只读预检：CLI 路径/版本、主程序连通、设备在线、≥V4.39.0 判定（不触碰 term 通道） |
-| `doctor <device_id>` | 只读探测指定设备的 term 通道；不创建、终止或抢占会话 |
-| `list` | 列出账号下所有设备（ID、名称、在线状态） |
-| `exec <device_id> "<命令>" [--session-name <名称>\|--session-id <ID>]` | 远程执行一条命令，自动分页拉全输出（默认 powershell）；可附加已有会话 |
-| `read <device_id> <远程路径>` | 读远程文件到 stdout（base64 分页+长度强校验，≤256KB） |
-| `write <device_id> <远程路径> <本地文件>` | 推送本地文件到远程（≤512KB，含中文路径/内容无损） |
-| `pty <device_id>` | 交互模式：stdin 每行 → 远程屏幕快照（处理 ssh 密码、y/n 确认） |
-| `sessions <device_id>` | 列出远程终端会话（运维清理用） |
-| `kill <device_id> <session_id>` | 结束指定会话（只 kill 确认属于自己的） |
-
-`exec`/`read`/`write` 仅支持 `--shell powershell`；cmd/zsh 会话请用 `pty`。
-
-新版管道 CLI 的已有远程会话通过 `--session-id` 附加；本 skill 支持先用 `--session-name session1` 精确解析名称，再附加对应 ID。`sessions` 输出可用于区分多个远程 session。旧版 CLI 只能列出 GUI 会话名称，没有数字 ID，因此可以识别但不能无窗口附加，不会把 GUI 会话误报成已执行。
-
-## 标准工作流
-
-1. 动手前跑只读体检：`node bin\uu-bridge.cjs doctor` 或 `pwsh -File scripts/uu-doctor.ps1`（确认主程序通信、设备在线）；已知设备 ID 时运行 `node bin\uu-bridge.cjs doctor <device_id>` 检查终端通道
-2. `list` 拿设备 ID（设备 ID 会变，不要硬编码记忆值）
-3. `exec` 执行命令；判读用 `NAME=VALUE` 结构化标记（如 `HASH=...`、`COUNT=113`），不依赖整段文本
-4. 任务结束清理自己产生的临时文件与残留，复核为空才算完成
-
-```powershell
-node ...\bin\uu-bridge.cjs list
-node ...\bin\uu-bridge.cjs exec <device_id> "Get-PSDrive -PSProvider FileSystem"
-node ...\bin\uu-bridge.cjs exec <device_id> "Get-Content C:\Users\xx\log.txt -Tail 20"
-node ...\bin\uu-bridge.cjs write <device_id> 'C:\fix.ps1' .\fix.ps1
-```
-
-## 实测安全包络与校验语义（2026-09-19，4.41.0.2311）
-
-屏幕是 **39 行 × 120 列**，超长行按 120 列折行——因此「输出行数」不等于「屏上行数」。
-
-| 负载 | 结论 |
-|---|---|
-| `exec` 输出行 ≤120 列 | 可信 |
-| `exec` 输出行 >120 列 | 旧版**静默丢行**（121 列 → 30 行只回 4 行）；现按**屏行成本**分页并对端回报行数，不符则换哨兵重拉，仍不符**报错** |
-| `read` ≤1KB | 可信 |
-| `read` ≥8KB | 旧版可能静默返回变长数据；现要求远端 `UU_FLEN` 长度标记，**取不到就失败** |
-| `write` | 受吞吐限制（~1.7KB/s）；超时后**远端状态未知**，消息会给出 SHA256 核对命令 |
-
-**校验语义：校验缺失 = 失败**（不再「取不到标记就跳过校验」）。
-
-诊断工具：`tools/protocol-probe.cjs`（真机取证）、`tools/protocol-regress.cjs`（离线重放 `tests/fixtures/*.raw`，不触远程）。
-
-## 运营铁律
-
-### 会话卫生（409 的根源）
-
-- 通道**同时只允许一个窗口附加**：他人正在用时立即停手等待，绝不抢占
-- `--new-session` 报 `409 terminal session already exists`：`exited` 会话仍占服务端独占锁，按 `LAST_ACTIVE` 找最新会话 `--kill-session <id>` 再新建；**只 kill 确认属于自己的会话**
-- 每次 `exec`/`read`/`write` 会自动 `exit` 收尾；被 timeout 强杀的进程可能在远程留残留，用 `sessions` 检查
-
-### 命令与输出
-
-- 命令一律**单行**（`;` 连接）：多行 here-string 会被逐字符粘贴破坏
-- 复杂脚本不要内联：先 `write` 落盘再 `exec`；远程 `.ps1` 被执行策略拒绝时用 `powershell -NoProfile -ExecutionPolicy Bypass -File ...`
-- 走原始 CLI 时需自行过滤 `[连接]` 日志与 ANSI 转义（本工具已处理）
-
-### 编码与假故障
-
-- **远程机多为 PowerShell 5.1，本机可能是 7**：`Sort-Object` 等行为差异会制造"两端不一致"假故障，比对用顺序无关聚合
-- `.cmd`/`.bat` 落到远程前**必须转 GBK + CRLF**
-- 中文乱码：设 `PYTHONIOENCODING=utf-8`，远端文件统一 UTF-8
-
-### 官方 JSON 约定（管理面命令）
-
-- 先判 `.success`，成功读 `.data`，失败读 `.error.code/.error.message`——**很多失败仍以退出码 0 结束，不能只看退出码**
-- 错误码：1001 未登录 / 1002 主应用未运行 / 1003 版本不匹配 / 1004 参数无效 / 1005 数据未刷新 / 1006 设备未找到 / 1008 多匹配 / 1010 设备离线
-- 设备名模糊匹配用 `--m "名称"`（双横线），不要把名称当位置参数
-
-## 故障排查
-
-| 现象 | 原因/处理 |
-|---|---|
-| 业务命令失败但退出码 0 | 解析 JSON `.success/.error`，按错误码表处理 |
-| 退出码 2 / 错误码 1002 / 1001 | 主程序未运行或未登录。官方：除 `version` 外所有命令都要求客户端后台运行 |
-| 「主控端版本过低，被控端不再兼容此协议版本」（退出码 6） | 多为 term 通道未激活，与版本无关 | **在主控端 GUI 打开该设备的终端窗口，再重试 CLI**（秒级恢复）；终端开着仍报错且两端版本确实不等时，升级版本旧的一端 |
-| `无法启动 CLI` / `ENOENT` | CLI 不在默认安装目录（官方：CLI 在安装目录 `bin` 下，默认不在 PATH）→ 设 `UU_CLI_PATH=<完整路径>` |
-| 「不支持远程终端管道通道」 | 本机 CLI 太旧（`term` 只有 `open/exit`），升级 UU远程 主程序 |
-| 「远程终端会话无法就绪」 | 被控端离线；被控端锁屏待系统账户验证；通道被他人占用（**立即停手，不抢占**） |
-| 锁屏后进终端要验证 | 官方：进终端前需完成一次系统账户验证（仅验证身份，不解锁屏幕）；Windows 主控端发起时需手动输入被控端系统账户密码 |
-| 非同账号/协助场景要用终端 | 官方：终端仅支持**同账号远控**，远程协助暂不支持 |
-| "attached from another window" | 他人/别的窗口正占用通道，等待或协调，不抢占 |
-| 「操作过于频繁」/ Streamer error 2005 | 建会话限流，工具已内置退避重试；仍失败则等 30s 再试 |
-| 409 terminal session already exists | 僵尸会话占锁：`sessions` → `kill` 自己的会话 → 重试 |
-
-## 协议硬限制（2026-09 生产验收实测）
-
-- **性能基线**：单次 exec 全程 ~7s（含握手）；读吞吐 ~0.8-1KB/s、写 ~1.7KB/s；64KB 读约 55s、写约 40s。长输出先在远程端过滤
-- **read/write 上限**：read 256KB（b64 长度强校验，不符自动重拉 3 次，仍不符显式报错）；write 512KB（失败带远程异常消息）；**更大文件走 UU 图形界面文件传输**，传完用 exec 核对 SHA256
-- 每条命令 Clear-Host 冲刷 + BEGIN 标记隔离回显 + 26 行分页；内置限流退避与哨兵后静默确认
-- 会话结束自动 exit，但**服务端可能仍标记 detached running**（实测不阻塞新会话：40+ 连续调用零 409）；累积后用 `sessions` + `kill` 清理
-- 官方「端口映射」是 **GUI 能力、无 CLI 命令**，且关闭面板即失效，不作自动化通道
-- 实测版本矩阵见 `README.md`「版本与兼容」
-
-## 重编译与离线回归（修改 src 后）
-
-```powershell
-cd <skill-dir>/src
-npx esbuild main.ts --bundle --platform=node --outfile=..\bin\uu-bridge.cjs
-cd ..
-npx esbuild tools/protocol-regress.ts --bundle --platform=node --outfile=tools/protocol-regress.cjs
-node tools/protocol-regress.cjs      # 离线重放 tests/fixtures/*.raw，不需要真机
-```
-
-## 来源与溯源
-
-- 执行核心：https://github.com/song-chaoyang/uu-remote-vscode （TermBridge/vt/capabilities，MIT）
-- 运营规程：https://github.com/yinren112/uu-remote-ops （409/PS5.1/GBK/分块传输）
-- 官方规范：https://uuyc.163.com/help/cli.html 及官方 skill zip（JSON 约定、错误码）
-- 官方文档（版本门槛/平台限制/退出码）：[CLI 教程](https://uuyc.163.com/blog/20260625-cli.html)、[终端说明](https://uuyc.163.com/help/20260509/40220_1299599.html)、[端口映射](https://uuyc.163.com/help/20260423/40220_1297526.html)
-- 协议常量与原始字节证据：`PROTOCOL.md`（屏幕 39×120、折行阈值、ECH、退出清屏、尺寸安全包络）
-- **2026-09-19 复测（4.41.0.2311）**：见 `TEST-REPORT.md` 末节。修正了 `vt.ts`「24 行屏幕」的错误注释（实为 39 行），并确认屏幕宽 120 列、超长行折行
-- **2026-09 生产验收修复**（8 阶段 38 项测试驱动）：Clear-Host 冲刷替代 60 空行（服务端差分渲染器会丢宽行）、VtScreen 补 ECH(CSI X)、限流退避重试、哨兵后静默确认、分页自愈 + b64 长度强校验（杜绝静默损坏）、read/write 显式 MISS/FAIL 标记、新增 sessions/kill 子命令
+只有需要兼容支持旧终端管道的官方 CLI 时，才读 [legacy-pipe.md](references/legacy-pipe.md)。
+该旧路径的 512 KB 上限、速度基线和 shell 限制不适用于原生文件通道。

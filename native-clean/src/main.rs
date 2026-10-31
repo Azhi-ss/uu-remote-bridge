@@ -11,6 +11,8 @@ mod peer;
 mod signal;
 mod terminal;
 mod terminal_host;
+#[cfg(feature = "desktop")]
+mod viewer_terminal;
 mod wire;
 
 use std::env;
@@ -126,5 +128,5 @@ async fn run(args: &[String]) -> Result<(), String> {
 }
 
 fn help() -> &'static str {
-    "uu-remote-clean\n  sessions DEVICE\n  exec DEVICE SESSION_OR_NAME COMMAND...\n  files-list DEVICE PATH\n  files-upload DEVICE LOCAL REMOTE\n  files-download DEVICE REMOTE LOCAL\n  files-remove DEVICE PATH\n  input DEVICE JSON_OR_ARRAY\n  desktop-view DEVICE [COLUMNS]\n  desktop-snapshot DEVICE FILE.ppm\n  host [--desktop]\n\nThe default build is a headless terminal/WebRTC clean-room client and host. Desktop capture/input/view requires --features desktop and host --desktop."
+    "uu-remote-clean\n  sessions DEVICE\n  exec DEVICE SESSION_OR_NAME COMMAND...\n  files-list DEVICE PATH\n  files-upload DEVICE LOCAL REMOTE\n  files-download DEVICE REMOTE LOCAL\n  files-remove DEVICE PATH\n  input DEVICE JSON_OR_ARRAY\n  desktop-view DEVICE [COLUMNS]\n  desktop-snapshot DEVICE FILE.ppm\n  host [--desktop]\n\ndesktop-view forwards keyboard/mouse; Ctrl+] exits, Ctrl+G then a key sends Win+key.\nThe default build is a headless terminal/WebRTC clean-room client and host. Desktop capture/input/view requires --features desktop and host --desktop."
 }
