@@ -54,7 +54,7 @@ macOS 上可直接从 Bash 调用 `bin/uu-bridge`；它只负责启动本地 Nod
 ./bin/uu-native-remote terminal-exec <device_id> session1 whoami
 ```
 
-它按精确会话名或数字 ID 区分多个 session，执行完发送 detach 保留会话，不会 close/kill。Rust crate 位于 `native-clean/`，使用 MIT 许可证；它独立实现认证、Engine.IO/Socket.IO、WebRTC、终端 host/viewer 和基础文件通道，不复制 GPL 参考仓库源码。默认构建不启用桌面采集、输入、音频、GTK 或 PAM。
+它按精确会话名或数字 ID 区分多个 session，执行完发送 detach 保留会话，不会 close/kill。Rust crate 位于 `native-clean/`，使用 MIT 许可证；它独立实现认证、Engine.IO/Socket.IO、WebRTC、终端 host/viewer，以及目录、上传、下载和分块确认组成的完整文件通道，不复制 GPL 参考仓库源码。默认构建不启用桌面采集、输入、音频、GTK 或 PAM；需要桌面能力时用 `--features desktop` 并显式传 `host --desktop`。
 
 ## 故障排查
 

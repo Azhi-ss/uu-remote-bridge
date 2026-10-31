@@ -54,8 +54,12 @@ pub fn terminal_control(sequence: u64) -> Vec<u8> {
 }
 
 pub fn connect_options(device: &str) -> Vec<u8> {
+    connect_options_for(device, false)
+}
+
+pub fn connect_options_for(device: &str, desktop: bool) -> Vec<u8> {
     let mut out = Vec::new();
-    field_varint(1, 8, &mut out);
+    field_varint(1, if desktop { 1 } else { 8 }, &mut out);
     field_varint(2, u64::MAX, &mut out);
     field_varint(8, 3, &mut out);
     field_bytes(9, device.as_bytes(), &mut out);
@@ -65,6 +69,10 @@ pub fn connect_options(device: &str) -> Vec<u8> {
 }
 
 pub fn control_header(app_id: &str) -> serde_json::Value {
+    control_header_for(app_id, false)
+}
+
+pub fn control_header_for(app_id: &str, desktop: bool) -> serde_json::Value {
     json!({
         "control_id": app_id,
         "app_data": {"_placeholder": true, "num": 0},
@@ -73,7 +81,7 @@ pub fn control_header(app_id: &str) -> serde_json::Value {
             "device_capability": {
                 "display_info": [],
                 "ice_id": "",
-                "video_codec_capability": []
+                "video_codec_capability": if desktop { vec!["video/H264"] } else { Vec::<&str>::new() }
             }
         }).to_string()
     })

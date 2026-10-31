@@ -11,13 +11,22 @@ The rewrite is split into protocol, transport, and capability layers:
 - `host.rs` is the host WebRTC peer. It accepts offers and routes each incoming
   channel to a capability service.
 - `wire.rs` and `control.rs` contain the independent protobuf/terminal framing
-  code. `terminal_host.rs` owns host processes and session IDs; `file_host.rs`
-  implements the bounded directory RPC.
+  code. `terminal_host.rs` owns host processes and session IDs. `file_host.rs`
+  and `file_client.rs` implement the FILE_DATA_CHANNEL RPC, including zlib
+  directory/file lists, upload/download block acknowledgements, resume and
+  duplicate strategies, and filesystem operations.
+- `desktop.rs` is an optional capability boundary. With `--features desktop`
+  and `host --desktop`, the host captures the primary display with `scrap`,
+  encodes H.264 with OpenH264, publishes a WebRTC video track, and maps the
+  control-channel keyboard/mouse events to `enigo`. The viewer creates a
+  recv-only transceiver and exposes incoming RTP payloads to the client API.
 
-The default capability set is headless. It does not claim desktop capture,
-input injection, clipboard, PAM, audio, or GUI support. Those capabilities can
-be added behind the `desktop` feature without changing authentication or the
-terminal/file protocol.
+The default capability set is headless. It does not request desktop capture or
+input permissions, and the host only advertises terminal/file capabilities.
+Desktop support is opt-in at both build time and runtime; Screen Recording and
+Accessibility permissions can therefore be granted only to the process that
+needs them. Clipboard, PAM, audio and GUI integration remain outside this
+clean-room core.
 
 The original GPL repository is kept outside this crate as a behavioral
 reference. No source file, generated binding, asset, or dependency is copied

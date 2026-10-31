@@ -10,6 +10,11 @@ use std::{
     time::Duration,
 };
 use tokio::sync::mpsc;
+#[cfg(feature = "desktop")]
+use webrtc::rtp_transceiver::{
+    rtp_codec::RTPCodecType, rtp_transceiver_direction::RTCRtpTransceiverDirection,
+    RTCRtpTransceiverInit,
+};
 use webrtc::{
     api::{
         interceptor_registry::register_default_interceptors, media_engine::MediaEngine, APIBuilder,
@@ -34,16 +39,21 @@ pub struct Client {
     peer: Peer,
 }
 
-struct Peer {
+pub(crate) struct Peer {
     pc: Arc<RTCPeerConnection>,
     channels: Vec<Arc<RTCDataChannel>>,
     signal_task: tokio::task::JoinHandle<()>,
     incoming: mpsc::Receiver<(usize, Vec<u8>)>,
     buffered: VecDeque<(usize, Vec<u8>)>,
+    video_packets: mpsc::Receiver<Vec<u8>>,
 }
 
 impl Client {
     pub async fn connect(device: &str) -> Result<Self, String> {
+        Self::connect_with_options(device, false).await
+    }
+
+    pub async fn connect_with_options(device: &str, desktop_enabled: bool) -> Result<Self, String> {
         let credentials = crate::config::load()?;
         let http = reqwest::Client::builder()
             .no_proxy()
@@ -51,8 +61,36 @@ impl Client {
             .build()
             .map_err(|_| "cannot create HTTP client")?;
         let room = api::join(&http, &credentials, device).await?;
-        let peer = Peer::connect(&credentials, device, &room).await?;
+        let peer = Peer::connect(&credentials, device, &room, desktop_enabled).await?;
         Ok(Self { peer })
+    }
+
+    pub async fn next_video_packet(&mut self) -> Result<Vec<u8>, String> {
+        self.peer
+            .video_packets
+            .recv()
+            .await
+            .ok_or_else(|| "desktop video stream closed".into())
+    }
+
+    pub async fn send_input(&self, value: &Value) -> Result<(), String> {
+        let bytes = serde_json::to_vec(value).map_err(|_| "invalid desktop input JSON")?;
+        self.peer.send(0, bytes).await
+    }
+
+    pub async fn files_list(
+        &mut self,
+        path: &str,
+    ) -> Result<Vec<crate::file_client::FileEntry>, String> {
+        crate::file_client::list(&mut self.peer, path).await
+    }
+
+    pub async fn files_upload(&mut self, local: &str, remote: &str) -> Result<(), String> {
+        crate::file_client::upload(&mut self.peer, local, remote).await
+    }
+
+    pub async fn files_download(&mut self, remote: &str, local: &str) -> Result<(), String> {
+        crate::file_client::download(&mut self.peer, remote, local).await
     }
 
     pub async fn sessions(&mut self) -> Result<Vec<Session>, String> {
@@ -155,6 +193,7 @@ impl Peer {
         _credentials: &Credentials,
         device: &str,
         room: &api::Room,
+        desktop_enabled: bool,
     ) -> Result<Self, String> {
         let app_id = wire::uuid();
         let requested_ice = hex::encode(rand::random::<[u8; 16]>());
@@ -166,8 +205,8 @@ impl Peer {
         .await?;
         let ack = signal
             .control(
-                wire::control_header(&app_id),
-                wire::connect_options(device),
+                wire::control_header_for(&app_id, desktop_enabled),
+                wire::connect_options_for(device, desktop_enabled),
                 Duration::from_secs(20),
             )
             .await?;
@@ -201,6 +240,31 @@ impl Peer {
                 .await
                 .map_err(|_| "cannot create WebRTC peer")?,
         );
+        #[cfg(feature = "desktop")]
+        if desktop_enabled {
+            pc.add_transceiver_from_kind(
+                RTPCodecType::Video,
+                Some(RTCRtpTransceiverInit {
+                    direction: RTCRtpTransceiverDirection::Recvonly,
+                    send_encodings: Vec::new(),
+                }),
+            )
+            .await
+            .map_err(|_| "cannot create desktop video transceiver")?;
+        }
+        let (video_tx, video_packets) = mpsc::channel(64);
+        pc.on_track(Box::new(move |track, _, _| {
+            let video_tx = video_tx.clone();
+            Box::pin(async move {
+                tokio::spawn(async move {
+                    while let Ok((packet, _)) = track.read_rtp().await {
+                        if video_tx.send(packet.payload.to_vec()).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            })
+        }));
         install_ice_callback(
             &pc,
             candidate_tx,
@@ -302,10 +366,11 @@ impl Peer {
             signal_task,
             incoming: data_rx,
             buffered: VecDeque::new(),
+            video_packets,
         })
     }
 
-    async fn send(&self, index: usize, bytes: Vec<u8>) -> Result<(), String> {
+    pub(crate) async fn send(&self, index: usize, bytes: Vec<u8>) -> Result<(), String> {
         let channel = self
             .channels
             .get(index)
@@ -317,7 +382,7 @@ impl Peer {
             .map_err(|_| "WebRTC data channel send failed".into())
     }
 
-    async fn recv(&mut self) -> Result<(usize, Vec<u8>), String> {
+    pub(crate) async fn recv(&mut self) -> Result<(usize, Vec<u8>), String> {
         if let Some(item) = self.buffered.pop_front() {
             return Ok(item);
         }

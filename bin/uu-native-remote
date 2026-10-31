@@ -17,7 +17,7 @@ elif [[ $# -gt 0 && "$1" == "terminal-exec" ]]; then
   set -- exec "${@:2}"
 fi
 
-if [[ -x "$BIN" ]]; then
+if [[ -x "$BIN" && -z "${UU_NATIVE_CLEAN_FEATURES:-}" ]]; then
   exec "$BIN" "$@"
 fi
 
@@ -27,4 +27,7 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 127
 fi
 
+if [[ -n "${UU_NATIVE_CLEAN_FEATURES:-}" ]]; then
+  exec cargo run --quiet --manifest-path "$MANIFEST" --features "$UU_NATIVE_CLEAN_FEATURES" -- "$@"
+fi
 exec cargo run --quiet --manifest-path "$MANIFEST" -- "$@"

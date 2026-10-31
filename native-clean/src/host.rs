@@ -5,7 +5,7 @@
 //! independent of desktop capture and input permissions.
 
 use crate::{
-    api, config::Credentials, control, file_host::FileHost, signal::Signal,
+    api, config::Credentials, control, desktop, file_host::FileHost, signal::Signal,
     terminal_host::TerminalHost,
 };
 use bytes::Bytes;
@@ -27,11 +27,13 @@ use webrtc::{
 pub struct Host {
     credentials: Credentials,
     terminal: TerminalHost,
+    desktop_enabled: bool,
 }
 
 struct HostPeer {
     pc: Arc<RTCPeerConnection>,
     ice_id: String,
+    _video_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Host {
@@ -39,6 +41,15 @@ impl Host {
         Self {
             credentials,
             terminal: TerminalHost::new(),
+            desktop_enabled: false,
+        }
+    }
+
+    pub fn new_with_options(credentials: Credentials, desktop_enabled: bool) -> Self {
+        Self {
+            credentials,
+            terminal: TerminalHost::new(),
+            desktop_enabled,
         }
     }
 
@@ -121,6 +132,7 @@ impl Host {
                     }
                     let peer = HostPeer::accept_offer(
                         &self.terminal,
+                        self.desktop_enabled,
                         sdp,
                         ice_id.clone(),
                         app_control_id.clone(),
@@ -168,6 +180,7 @@ impl Host {
 impl HostPeer {
     async fn accept_offer(
         terminal: &TerminalHost,
+        desktop_enabled: bool,
         sdp: &str,
         ice_id: String,
         app_control_id: String,
@@ -196,7 +209,16 @@ impl HostPeer {
             app_control_id,
             remote_client,
         );
-        install_data_channels(&pc, terminal.clone(), FileHost::new());
+        install_data_channels(&pc, terminal.clone(), FileHost::new(), desktop_enabled);
+        let mut video_task = None;
+        let viewer_requested_video = sdp.lines().any(|line| line.starts_with("m=video"));
+        if let Some(video) = desktop::start_video(desktop_enabled && viewer_requested_video).await?
+        {
+            pc.add_track(video.track.clone())
+                .await
+                .map_err(|_| "cannot add desktop video track")?;
+            video_task = Some(video.task);
+        }
         let offer =
             RTCSessionDescription::offer(sdp.to_owned()).map_err(|_| "invalid remote offer")?;
         pc.set_remote_description(offer)
@@ -211,11 +233,20 @@ impl HostPeer {
             .await
             .map_err(|_| "cannot set host answer")?;
         let _ = tokio::time::timeout(Duration::from_secs(8), gathered.recv()).await;
-        Ok(Self { pc, ice_id })
+        Ok(Self {
+            pc,
+            ice_id,
+            _video_task: video_task,
+        })
     }
 }
 
-fn install_data_channels(pc: &Arc<RTCPeerConnection>, terminal: TerminalHost, files: FileHost) {
+fn install_data_channels(
+    pc: &Arc<RTCPeerConnection>,
+    terminal: TerminalHost,
+    files: FileHost,
+    desktop_enabled: bool,
+) {
     pc.on_data_channel(Box::new(move |channel: Arc<RTCDataChannel>| {
         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let send_channel = channel.clone();
@@ -242,6 +273,10 @@ fn install_data_channels(pc: &Arc<RTCPeerConnection>, terminal: TerminalHost, fi
                 } else if label == "CONTROL_DATA_CHANNEL" {
                     if let Some(response) = control::response_for(&message.data) {
                         let _ = tx.send(response);
+                    } else if desktop_enabled {
+                        if let Ok(value) = serde_json::from_slice::<Value>(&message.data) {
+                            let _ = desktop::apply_input(&value);
+                        }
                     }
                 }
             })
@@ -353,6 +388,7 @@ mod tests {
         let (candidate_tx, mut candidate_rx) = mpsc::channel(32);
         let host = HostPeer::accept_offer(
             &TerminalHost::new(),
+            false,
             &viewer_pc.local_description().await.unwrap().sdp,
             "loopback-ice".into(),
             "loopback-control".into(),
