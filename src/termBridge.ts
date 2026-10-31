@@ -52,6 +52,11 @@ export class BridgeError extends Error {
   }
 }
 
+/** 生成新版 uuyc-cli 的远程终端启动参数；有 sessionId 时附加已有会话。 */
+export function buildTermArgs(deviceId: string, shell: ShellKind, sessionId?: string): string[] {
+  return ['term', '--device-id', deviceId, '--shell', shell, ...(sessionId ? ['--session-id', sessionId] : ['--new-session'])];
+}
+
 /** 每页最大输出行数(≤ 视口 39 行,留哨兵/prompt/回显余量) */
 const PAGE_ROWS = 26;
 /** 单页允许占用的最大「屏行数」——折行行按 ceil(len/120) 折算；39 行视口留 4 行余量 */
@@ -257,6 +262,8 @@ export class TermBridge {
     private readonly deviceId: string,
     private readonly shell: ShellKind = 'powershell',
     private readonly onStderr?: (line: string) => void,
+    /** 新版 CLI 的远程会话 ID；未提供时创建独立的新会话。 */
+    private readonly sessionId?: string,
   ) {
     this.protocol =
       shell === 'powershell'
@@ -376,7 +383,7 @@ export class TermBridge {
 
     this.screen.reset();
     this.stderrTail.length = 0;
-    this.child = spawn(this.cliPath, ['term', '--device-id', this.deviceId, '--new-session', '--shell', this.shell], {
+    this.child = spawn(this.cliPath, buildTermArgs(this.deviceId, this.shell, this.sessionId), {
       windowsHide: true,
     }) as ChildProcessWithoutNullStreams;
     this.child.stdout.setEncoding('utf8');

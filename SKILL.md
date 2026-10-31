@@ -35,6 +35,18 @@ Windows 上调用（skill 目录通常为 `%USERPROFILE%\.agents\skills\uu-remot
 node "%USERPROFILE%\.agents\skills\uu-remote-bridge\bin\uu-bridge.cjs" <子命令> ...
 ```
 
+macOS 可直接使用同目录的 `bin/uu-bridge` Bash 入口；它不会自行创建新会话，传入 `--session-name` 或 `--session-id` 时只路由到指定远程 session。
+
+如果当前官方 `uuyc-cli` 只有 GUI 会话管理命令（没有 `--list-sessions` / `--session-id` 管道模式），可用同目录的 `bin/uu-native-remote`。它调用单独保留许可证的 native `CT_TERMINAL` 后端，不会把 GUI 窗口当成可执行管道：
+
+```bash
+bin/uu-native-remote terminal-list <device_id>
+bin/uu-native-remote terminal-exec <device_id> session1 whoami
+bin/uu-native-remote terminal-exec <device_id> 1 'Get-ChildItem C:\\Users'
+```
+
+`terminal-exec` 只附加已存在的会话，按数字 ID 或精确名称选择，命令完成后发送 detach，不会发送 close/kill。native 后端需要单独完成一次 UU 登录并生成自己的配置；不会读取或复制官方 App 的令牌。
+
 ## 命令速查
 
 | 命令 | 说明 |
@@ -42,7 +54,7 @@ node "%USERPROFILE%\.agents\skills\uu-remote-bridge\bin\uu-bridge.cjs" <子命�
 | `doctor` | 只读预检：CLI 路径/版本、主程序连通、设备在线、≥V4.39.0 判定（不触碰 term 通道） |
 | `doctor <device_id>` | 只读探测指定设备的 term 通道；不创建、终止或抢占会话 |
 | `list` | 列出账号下所有设备（ID、名称、在线状态） |
-| `exec <device_id> "<命令>"` | 远程执行一条命令，自动分页拉全输出（默认 powershell） |
+| `exec <device_id> "<命令>" [--session-name <名称>\|--session-id <ID>]` | 远程执行一条命令，自动分页拉全输出（默认 powershell）；可附加已有会话 |
 | `read <device_id> <远程路径>` | 读远程文件到 stdout（base64 分页+长度强校验，≤256KB） |
 | `write <device_id> <远程路径> <本地文件>` | 推送本地文件到远程（≤512KB，含中文路径/内容无损） |
 | `pty <device_id>` | 交互模式：stdin 每行 → 远程屏幕快照（处理 ssh 密码、y/n 确认） |
@@ -50,6 +62,8 @@ node "%USERPROFILE%\.agents\skills\uu-remote-bridge\bin\uu-bridge.cjs" <子命�
 | `kill <device_id> <session_id>` | 结束指定会话（只 kill 确认属于自己的） |
 
 `exec`/`read`/`write` 仅支持 `--shell powershell`；cmd/zsh 会话请用 `pty`。
+
+新版管道 CLI 的已有远程会话通过 `--session-id` 附加；本 skill 支持先用 `--session-name session1` 精确解析名称，再附加对应 ID。`sessions` 输出可用于区分多个远程 session。旧版 CLI 只能列出 GUI 会话名称，没有数字 ID，因此可以识别但不能无窗口附加，不会把 GUI 会话误报成已执行。
 
 ## 标准工作流
 

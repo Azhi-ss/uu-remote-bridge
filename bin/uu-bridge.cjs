@@ -32,6 +32,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
   mod
 ));
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
 // src/cli.ts
 var cli_exports = {};
@@ -512,6 +513,11 @@ var init_cli = __esm({
 });
 
 // src/main.ts
+var main_exports = {};
+__export(main_exports, {
+  parseArgs: () => parseArgs
+});
+module.exports = __toCommonJS(main_exports);
 init_cli();
 
 // src/doctor.ts
@@ -928,6 +934,9 @@ var BridgeError = class extends Error {
     this.name = "BridgeError";
   }
 };
+function buildTermArgs(deviceId, shell, sessionId) {
+  return ["term", "--device-id", deviceId, "--shell", shell, ...sessionId ? ["--session-id", sessionId] : ["--new-session"]];
+}
 var PAGE_ROWS = 26;
 var PAGE_SCREEN_ROWS = 35;
 var BEGIN_MARKER = "UU_BEGIN";
@@ -1053,17 +1062,19 @@ function b64ShapeValid(rows, count) {
   return rows.length === 0 || rows[rows.length - 1].length <= 76;
 }
 var TermBridge = class {
-  constructor(cliPath, deviceId, shell = "powershell", onStderr) {
+  constructor(cliPath, deviceId, shell = "powershell", onStderr, sessionId) {
     this.cliPath = cliPath;
     this.deviceId = deviceId;
     this.shell = shell;
     this.onStderr = onStderr;
+    this.sessionId = sessionId;
     this.protocol = shell === "powershell" ? powershellProtocol : posixProtocol(`/tmp/uu-${process.pid}-`);
   }
   cliPath;
   deviceId;
   shell;
   onStderr;
+  sessionId;
   child;
   screen = new VtScreen();
   seq = 0;
@@ -1170,7 +1181,7 @@ var TermBridge = class {
     }
     this.screen.reset();
     this.stderrTail.length = 0;
-    this.child = (0, import_child_process3.spawn)(this.cliPath, ["term", "--device-id", this.deviceId, "--new-session", "--shell", this.shell], {
+    this.child = (0, import_child_process3.spawn)(this.cliPath, buildTermArgs(this.deviceId, this.shell, this.sessionId), {
       windowsHide: true
     });
     this.child.stdout.setEncoding("utf8");
@@ -1540,6 +1551,32 @@ var TermBridge = class {
 
 // src/main.ts
 var resolveCli = () => resolveCliPath(process.env["UU_CLI_PATH"]);
+function takeOption(argv, names) {
+  for (const name of names) {
+    const exact = argv.indexOf(name);
+    if (exact >= 0) {
+      const value = argv[exact + 1];
+      if (!value || value.startsWith("--")) {
+        console.error(`option requires a value: ${name}`);
+        process.exit(2);
+      }
+      argv.splice(exact, 2);
+      return value;
+    }
+    const prefix = `${name}=`;
+    const inline = argv.findIndex((arg) => arg.startsWith(prefix));
+    if (inline >= 0) {
+      const value = argv[inline].slice(prefix.length);
+      if (!value) {
+        console.error(`option requires a value: ${name}`);
+        process.exit(2);
+      }
+      argv.splice(inline, 1);
+      return value;
+    }
+  }
+  return void 0;
+}
 function parseArgs(argv) {
   const shellIdx = argv.indexOf("--shell");
   let shell = "powershell";
@@ -1547,10 +1584,78 @@ function parseArgs(argv) {
     shell = argv[shellIdx + 1];
     argv.splice(shellIdx, 2);
   }
-  return { shell, args: argv };
+  const sessionId = takeOption(argv, ["--session-id"]);
+  const sessionName = takeOption(argv, ["--session", "--session-name"]);
+  if (sessionId && sessionName) {
+    console.error("use only one of --session-id or --session-name");
+    process.exit(2);
+  }
+  return { shell, sessionId, sessionName, args: argv };
+}
+async function resolveSessionId(cli, deviceId, sessionName) {
+  let raw;
+  try {
+    raw = await execCliText(cli, ["term", "--device-id", deviceId, "--list-sessions"], { timeoutMs: 3e4 });
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    try {
+      const legacyRaw = await execCliText(cli, ["term", "-d", deviceId, "list", "--json"], { timeoutMs: 3e4 });
+      const legacy = tryParseJson(legacyRaw);
+      const names = Array.isArray(legacy?.data?.items) ? legacy.data.items.map((item) => String(item.name ?? "")).filter(Boolean) : [];
+      if (names.includes(sessionName)) {
+        throw new Error(
+          `\u5DF2\u627E\u5230\u8FDC\u7A0B\u4F1A\u8BDD\u300C${sessionName}\u300D\uFF0C\u4F46\u5F53\u524D uuyc-cli \u53EA\u652F\u6301 GUI \u9644\u52A0\uFF0C\u6CA1\u6709\u53EF\u4F9B\u65E0\u7A97\u53E3\u7BA1\u9053\u4F7F\u7528\u7684 session-id\u3002\u8BF7\u5347\u7EA7 UU Remote\u3002`
+        );
+      }
+    } catch (legacyError) {
+      if (legacyError instanceof Error && legacyError.message.includes("\u5DF2\u627E\u5230\u8FDC\u7A0B\u4F1A\u8BDD")) {
+        throw legacyError;
+      }
+    }
+    throw new Error(
+      `\u65E0\u6CD5\u6309\u540D\u79F0\u9644\u52A0\u8FDC\u7A0B\u4F1A\u8BDD\u300C${sessionName}\u300D\uFF1A\u5F53\u524D uuyc-cli \u4E0D\u652F\u6301\u4F1A\u8BDD\u7BA1\u9053\u6216\u4F1A\u8BDD\u5217\u8868\u3002\u8BF7\u5347\u7EA7 UU Remote\uFF1B\u539F\u59CB\u9519\u8BEF\uFF1A${detail}`
+    );
+  }
+  const sessions = parseTermSessions(raw);
+  const matches = sessions.filter((s) => s.label === sessionName);
+  if (matches.length === 0) {
+    const known = sessions.map((s) => `${s.label}(${s.id})`).join(", ");
+    throw new Error(`\u627E\u4E0D\u5230\u8FDC\u7A0B\u4F1A\u8BDD\u300C${sessionName}\u300D${known ? `\uFF1B\u5F53\u524D\u4F1A\u8BDD\uFF1A${known}` : ""}`);
+  }
+  if (matches.length > 1) {
+    throw new Error(`\u8FDC\u7A0B\u4F1A\u8BDD\u540D\u79F0\u300C${sessionName}\u300D\u4E0D\u552F\u4E00\uFF0C\u8BF7\u6539\u7528 --session-id <id>`);
+  }
+  return matches[0].id;
+}
+async function listRemoteSessions(cli, deviceId) {
+  try {
+    const raw = await execCliText(cli, ["term", "--device-id", deviceId, "--list-sessions"], { timeoutMs: 3e4 });
+    return raw.trim() || "(no sessions)";
+  } catch (newError) {
+    try {
+      const raw = await execCliText(cli, ["term", "-d", deviceId, "list", "--json"], { timeoutMs: 3e4 });
+      const obj = tryParseJson(raw);
+      const items = Array.isArray(obj?.data?.items) ? obj.data.items : [];
+      if (items.length === 0) {
+        return "LEGACY	(no sessions)	(no numeric session-id; GUI only)";
+      }
+      const lines = ["LEGACY_ID	NAME	SHELL	STATE	CREATED_AT"];
+      for (const item of items) {
+        const name = String(item.name ?? "");
+        const shell = String(item.shell ?? "");
+        const state = String(item.state ?? "");
+        const created = String(item.createdAt ?? item.created_at_ms ?? "");
+        lines.push(`GUI:${name}	${name}	${shell}	${state}	${created}`);
+      }
+      return lines.join("\n");
+    } catch {
+      const detail = newError instanceof Error ? newError.message : String(newError);
+      throw new Error(`\u65E0\u6CD5\u8BFB\u53D6\u8FDC\u7A0B\u4F1A\u8BDD\u5217\u8868\uFF1B\u65B0\u7248\u548C\u65E7\u7248 CLI \u5747\u5931\u8D25\uFF1A${detail}`);
+    }
+  }
 }
 async function main() {
-  const { shell, args } = parseArgs(process.argv.slice(2));
+  const { shell, sessionId: requestedSessionId, sessionName, args } = parseArgs(process.argv.slice(2));
   const [cmd, ...rest] = args;
   if (cmd === "doctor") {
     process.exitCode = await runDoctor(process.env["UU_CLI_PATH"], rest[0]);
@@ -1574,9 +1679,7 @@ async function main() {
     process.exit(2);
   }
   if (cmd === "sessions") {
-    const { execCliText: execCliText2 } = await Promise.resolve().then(() => (init_cli(), cli_exports));
-    const out = await execCliText2(cli, ["term", "--device-id", deviceId, "--list-sessions"], { timeoutMs: 3e4 });
-    console.log(out.trim() || "(no sessions)");
+    console.log(await listRemoteSessions(cli, deviceId));
     return;
   }
   if (cmd === "kill") {
@@ -1590,13 +1693,14 @@ async function main() {
     console.log(out.trim() || `session ${sid} killed`);
     return;
   }
+  const sessionId = sessionName ? await resolveSessionId(cli, deviceId, sessionName) : requestedSessionId;
   if (cmd === "exec") {
     const command = rest.slice(1).join(" ");
     if (!command) {
       console.error("command required");
       process.exit(2);
     }
-    const bridge = new TermBridge(cli, deviceId, shell);
+    const bridge = new TermBridge(cli, deviceId, shell, void 0, sessionId);
     try {
       const rows = await bridge.execRows(command, { timeoutMs: 9e4 });
       console.log(rows.length > 0 ? rows.join("\n") : "(no output)");
@@ -1607,7 +1711,7 @@ async function main() {
   }
   if (cmd === "read") {
     const path = rest[1];
-    const bridge = new TermBridge(cli, deviceId, shell);
+    const bridge = new TermBridge(cli, deviceId, shell, void 0, sessionId);
     try {
       const rows = await bridge.readFileB64(path, 256 * 1024);
       const first = rows[0] ?? "";
@@ -1630,7 +1734,7 @@ async function main() {
     }
     const { readFileSync } = await import("fs");
     const content = readFileSync(localFile);
-    const bridge = new TermBridge(cli, deviceId, shell);
+    const bridge = new TermBridge(cli, deviceId, shell, void 0, sessionId);
     try {
       await bridge.writeFile(path, content);
       console.log(`written ${path} (${content.length} bytes)`);
@@ -1640,7 +1744,7 @@ async function main() {
     return;
   }
   if (cmd === "pty") {
-    const bridge = new TermBridge(cli, deviceId, shell);
+    const bridge = new TermBridge(cli, deviceId, shell, void 0, sessionId);
     await bridge.ensureReady();
     console.log('--- pty ready; type lines, Ctrl-D / "exit" to quit ---');
     const readline = await import("readline");
@@ -1660,4 +1764,8 @@ async function main() {
 main().catch((e) => {
   console.error("ERROR:", e instanceof Error ? e.message : String(e));
   process.exit(1);
+});
+// Annotate the CommonJS export names for ESM import in node:
+0 && (module.exports = {
+  parseArgs
 });

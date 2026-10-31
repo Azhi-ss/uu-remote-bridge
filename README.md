@@ -30,13 +30,31 @@ node bin\uu-bridge.cjs exec <device_id> "hostname"
 | 命令 | 说明 |
 |---|---|
 | `list` | 列出账号下所有设备（ID / 名称 / 在线状态） |
-| `exec <device_id> "<命令>"` | 远程执行命令，输出分页拉全（不截断一屏） |
+| `exec <device_id> "<命令>" [--session-name <名称>\|--session-id <ID>]` | 远程执行命令，输出分页拉全（不截断一屏）；可附加已有会话 |
 | `read <device_id> <路径>` | 读远程文件（base64 分页，行数 + 总长双校验，不符自动重拉） |
 | `write <device_id> <路径> <本地文件>` | 推送本地文件 |
 | `pty <device_id>` | 交互模式：stdin 每行 → 远程屏幕快照（ssh 密码、y/n 确认等） |
 | `sessions` / `kill` | 会话列表 / 清理残留 |
 
 `doctor <device_id>` 只调用 `term --list-sessions` 探测通道，不创建或终止会话，也不会抢占其他窗口。探针会区分通道已就绪、需要先在 UU 远程 GUI 打开终端、版本不兼容、锁屏、被其他窗口占用、设备不可用和旧版 CLI。
+
+新版 CLI 支持通过 `--session-id` 附加已有远程终端。为便于使用会话名称，本项目额外提供 `--session-name session1`：它会先读取会话列表，精确匹配名称，再把对应 ID 传给 `--session-id`。`sessions` 会显示每个远程 session 的 ID、名称、Shell 和状态；旧版 CLI 会标记为 `GUI:<name>`，因为旧版没有数字 ID，只能区分会话名称，不能做无窗口附加。
+
+macOS 上可直接从 Bash 调用 `bin/uu-bridge`；它只负责启动本地 Node 桥接器，远端命令仍按会话的 Shell 执行：
+
+```bash
+./bin/uu-bridge sessions <device_id>
+./bin/uu-bridge exec <device_id> "whoami" --session-name session1
+```
+
+如果安装的官方 `uuyc-cli` 只有 GUI 会话命令，不能提供无窗口管道，可使用仓库内的 clean-room native 后端直接走 `CT_TERMINAL`：
+
+```bash
+./bin/uu-native-remote terminal-list <device_id>
+./bin/uu-native-remote terminal-exec <device_id> session1 whoami
+```
+
+它按精确会话名或数字 ID 区分多个 session，执行完发送 detach 保留会话，不会 close/kill。Rust crate 位于 `native-clean/`，使用 MIT 许可证；它独立实现认证、Engine.IO/Socket.IO、WebRTC、终端 host/viewer 和基础文件通道，不复制 GPL 参考仓库源码。默认构建不启用桌面采集、输入、音频、GTK 或 PAM。
 
 ## 故障排查
 

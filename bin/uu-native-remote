@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [[ -L "$SCRIPT_PATH" ]]; do
+  SCRIPT_DIR="$(cd -P -- "$(dirname -- "$SCRIPT_PATH")" && pwd)"
+  SCRIPT_PATH="$(readlink -- "$SCRIPT_PATH")"
+  [[ "$SCRIPT_PATH" = /* ]] || SCRIPT_PATH="$SCRIPT_DIR/$SCRIPT_PATH"
+done
+ROOT_DIR="$(cd -P -- "$(dirname -- "$SCRIPT_PATH")/.." && pwd)"
+MANIFEST="$ROOT_DIR/native-clean/Cargo.toml"
+BIN="${UU_NATIVE_CLEAN_BIN:-$ROOT_DIR/native-clean/target/release/uu-remote-clean}"
+
+if [[ $# -gt 0 && "$1" == "terminal-list" ]]; then
+  set -- sessions "${@:2}"
+elif [[ $# -gt 0 && "$1" == "terminal-exec" ]]; then
+  set -- exec "${@:2}"
+fi
+
+if [[ -x "$BIN" ]]; then
+  exec "$BIN" "$@"
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "uu-remote-clean binary not found: $BIN" >&2
+  echo "install Rust or set UU_NATIVE_CLEAN_BIN" >&2
+  exit 127
+fi
+
+exec cargo run --quiet --manifest-path "$MANIFEST" -- "$@"
