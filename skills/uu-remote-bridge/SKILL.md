@@ -17,7 +17,7 @@ metadata:
 
 1. 用 `command -v uu-native-remote` 找到 CLI，运行 `uu-native-remote --help` 确认可用命令。
    若已有源码 checkout，也可通过该仓库的 `bin/uu-native-remote` 运行。
-   新机器的 CLI 构建和 PATH 配置见[仓库安装说明](https://github.com/Azhi-ss/uu-remote-bridge/blob/rewrite/native-clean/README.md)。
+   新机器的 CLI 构建和 PATH 配置见[仓库安装说明](https://github.com/Azhi-ss/uu-remote-bridge#readme)。
 2. `uuyc-cli device list --json` 匹配用户指定的名字与在线状态，保存本次设备 ID。
    `uuyc-cli device status --json` 查看本机已连接的远程设备。
    官方 CLI 要检查 JSON 的 `success`，它的退出码可能仍为 0。

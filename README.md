@@ -16,10 +16,16 @@ cargo build --release --features desktop --manifest-path native-clean/Cargo.toml
 ## 安装 Agent skill
 
 ```sh
-npx skills add 'Azhi-ss/uu-remote-bridge#rewrite/native-clean' --skill uu-remote-bridge -g -a codex pi -y
+npx skills add Azhi-ss/uu-remote-bridge
 ```
 
-仓库中的源文件位于 [skills/uu-remote-bridge](skills/uu-remote-bridge/SKILL.md)。上述命令把说明和参考资料安装到 `~/.agents/skills/uu-remote-bridge/`，供 Codex 与 Pi 共用。更新时运行 `npx skills update uu-remote-bridge -g -y`。
+上述命令从默认分支安装到当前项目。若希望 Codex 和 Pi 在所有项目中共用 `~/.agents/skills/uu-remote-bridge/`，运行以下命令。
+
+```sh
+npx skills add Azhi-ss/uu-remote-bridge -g -a codex pi -y
+```
+
+全局安装后可用 `npx skills update uu-remote-bridge -g -y` 更新。[Skill 源文件](skills/uu-remote-bridge/SKILL.md)
 
 skill 调用 PATH 中的 `uu-native-remote`。首次配置 CLI 时，在源码仓库根目录完成上面的桌面版构建，然后把该仓库的 `bin/` 加入 Agent 的 PATH。用 `uu-native-remote --help` 验证。[原生客户端文档](native-clean/README.md) · [实测记录](native-clean/LIVE-TEST-2026-10-31.md)
 
