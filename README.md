@@ -13,7 +13,15 @@ cargo build --release --features desktop --manifest-path native-clean/Cargo.toml
 
 需要已有原生凭据 `~/.config/uuremote/config.json`（或 `UU_CONFIG`）。`desktop-view` 需要交互式终端；鼠标、键盘、拖动、滚轮和粘贴直接转发，`Ctrl+]` 退出，`Ctrl+G` 后按 `R` 发送 Win+R。
 
-Agent 用法以 [SKILL.md](SKILL.md) 为入口：命令直接执行，GUI 通过原生截图 → 输入 → 核实完成，无需控制本机 UU 可视化窗口。将整个仓库链接到 Agent 的 `skills/uu-remote-bridge` 目录即可发现；保留 `references/`、`bin/` 与 `native-clean/`。详见 [原生客户端文档](native-clean/README.md) 与 [实测记录](native-clean/LIVE-TEST-2026-10-31.md)。
+## 安装 Agent skill
+
+```sh
+npx skills add 'Azhi-ss/uu-remote-bridge#rewrite/native-clean' --skill uu-remote-bridge -g -a codex pi -y
+```
+
+仓库中的源文件位于 [skills/uu-remote-bridge](skills/uu-remote-bridge/SKILL.md)。上述命令把说明和参考资料安装到 `~/.agents/skills/uu-remote-bridge/`，供 Codex 与 Pi 共用。更新时运行 `npx skills update uu-remote-bridge -g -y`。
+
+skill 调用 PATH 中的 `uu-native-remote`。首次配置 CLI 时，在源码仓库根目录完成上面的桌面版构建，然后把该仓库的 `bin/` 加入 Agent 的 PATH。用 `uu-native-remote --help` 验证。[原生客户端文档](native-clean/README.md) · [实测记录](native-clean/LIVE-TEST-2026-10-31.md)
 
 以下 Node 管道桥接器保留用于兼容支持旧终端管道的官方 CLI；其约束不适用于原生通道。
 
@@ -35,8 +43,7 @@ node bin\uu-bridge.cjs exec <device_id> "hostname"
 - 被控端支持 **Windows / macOS**；**本项目实测范围仅 Windows 被控端**。锁屏时进终端需一次系统账户验证（Windows 主控端发起需手动输密码）
 - Node.js ≥ 20
 
-作为 agent skill 使用：整个目录拷到 `%USERPROFILE%\.agents\skills\uu-remote-bridge`（Claude Code / pi / Codex 的 skill 目录），`SKILL.md` 自动生效。
-旧 Node 管道运行时需要 `bin/` + `scripts/`；原生 skill 还需上述原生源码/二进制与引用资料。`PROTOCOL.md`（协议常量）、`PLAN.md`/`TEST-REPORT.md`（开发记录）、`tools/`/`tests/`（取证与离线回归）均不影响 skill 加载。
+旧 Node 管道桥接器从源码仓库的 `bin/` 调用，诊断脚本位于 `scripts/`。
 
 ## 命令
 

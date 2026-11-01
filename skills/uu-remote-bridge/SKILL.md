@@ -15,8 +15,9 @@ metadata:
 
 ## 选择设备与通道
 
-1. `command -v uu-native-remote`；不可用时用本 skill 根目录下的 `bin/uu-native-remote`。
-   用 `uu-native-remote --help` 查看当前命令，路径不依赖调用者当前目录。
+1. 用 `command -v uu-native-remote` 找到 CLI，运行 `uu-native-remote --help` 确认可用命令。
+   若已有源码 checkout，也可通过该仓库的 `bin/uu-native-remote` 运行。
+   新机器的 CLI 构建和 PATH 配置见[仓库安装说明](https://github.com/Azhi-ss/uu-remote-bridge/blob/rewrite/native-clean/README.md)。
 2. `uuyc-cli device list --json` 匹配用户指定的名字与在线状态，保存本次设备 ID。
    `uuyc-cli device status --json` 查看本机已连接的远程设备。
    官方 CLI 要检查 JSON 的 `success`，它的退出码可能仍为 0。
@@ -32,7 +33,7 @@ metadata:
 原生客户端读取 `UU_CONFIG` 或 `~/.config/uuremote/config.json` 中已有凭据；
 不需要启动本机 UU 可视化远控窗口。官方 CLI 设备管理仍依赖已登录的官方 App。
 原生凭据缺失/过期时报告具体错误，当前 clean 客户端没有 `login` 子命令。
-桌面功能需 desktop 构建：在本 skill 根目录执行
+桌面功能需 desktop 构建。在 CLI 源码仓库根目录执行
 `cargo build --release --features desktop --manifest-path native-clean/Cargo.toml`。
 
 ## 命令与文件

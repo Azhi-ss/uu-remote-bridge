@@ -1,6 +1,6 @@
 # Legacy official terminal pipe
 
-仅在目标安装的官方 CLI 确实支持终端管道模式时使用。下文路径均相对 skill 根目录；当前原生客户端见入口 SKILL.md。
+仅在目标安装的官方 CLI 确实支持终端管道模式时使用。下文的工具和构建路径都相对于 CLI 源码仓库根目录。原生客户端用法见 [SKILL.md](../SKILL.md)。
 
 
 # uu-remote-bridge
@@ -25,10 +25,10 @@
 | `scripts/uu-push-file.ps1` | ⚠️ **不可用**：上游脚本在当前服务端版本下标记渲染丢失（2026-09 复测确认），小文件推送请用 `write` |
 | `vendor/official-docs/` | 官方文档全文存档 + `INDEX.md`（硬约束/待验项）。**不进 Git、克隆后不存在**；仅本地参考 |
 
-Windows 上调用（skill 目录通常为 `%USERPROFILE%\.agents\skills\uu-remote-bridge`）：
+Windows 上在源码仓库根目录运行：
 
 ```powershell
-node "%USERPROFILE%\.agents\skills\uu-remote-bridge\bin\uu-bridge.cjs" <子命令> ...
+node .\bin\uu-bridge.cjs <子命令> ...
 ```
 
 macOS 可直接使用同目录的 `bin/uu-bridge` Bash 入口；它不会自行创建新会话，传入 `--session-name` 或 `--session-id` 时只路由到指定远程 session。
@@ -145,7 +145,7 @@ node ...\bin\uu-bridge.cjs write <device_id> 'C:\fix.ps1' .\fix.ps1
 ## 重编译与离线回归（修改 src 后）
 
 ```powershell
-cd <skill-dir>/src
+cd <checkout>/src
 npx esbuild main.ts --bundle --platform=node --outfile=..\bin\uu-bridge.cjs
 cd ..
 npx esbuild tools/protocol-regress.ts --bundle --platform=node --outfile=tools/protocol-regress.cjs
